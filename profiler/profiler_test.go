@@ -76,7 +76,7 @@ func createTestAgent(psc pb.ProfilerServiceClient) *agent {
 		client:        psc,
 		deployment:    createTestDeployment(),
 		profileLabels: map[string]string{instanceLabel: testInstance},
-		profileTypes:  []pb.ProfileType{pb.ProfileType_CPU, pb.ProfileType_HEAP, pb.ProfileType_THREADS},
+		profileTypes:  []pb.ProfileType{pb.ProfileType_CPU, pb.ProfileType_HEAP, pb.ProfileType_HEAP_ALLOC, pb.ProfileType_THREADS},
 	}
 }
 
@@ -140,11 +140,12 @@ func TestProfileAndUpload(t *testing.T) {
 	errFunc := func(io.Writer) error { return errors.New("") }
 	testDuration := time.Second * 5
 	tests := []struct {
-		profileType          pb.ProfileType
-		duration             *time.Duration
-		startCPUProfileFunc  func(io.Writer) error
-		writeHeapProfileFunc func(io.Writer) error
-		wantBytes            []byte
+		profileType           pb.ProfileType
+		duration              *time.Duration
+		startCPUProfileFunc   func(io.Writer) error
+		writeHeapProfileFunc  func(io.Writer) error
+		deltaMutexProfileFunc func(io.Writer) error
+		wantBytes             []byte
 	}{
 		{
 			profileType: pb.ProfileType_CPU,
@@ -217,6 +218,10 @@ func TestProfileAndUpload(t *testing.T) {
 				w.Write(heapCollected1.Bytes())
 				return nil
 			},
+		},
+		{
+			profileType:           pb.ProfileType_CONTENTION,
+			deltaMutexProfileFunc: errFunc,
 		},
 	}
 
@@ -300,7 +305,7 @@ func TestRetry(t *testing.T) {
 				Max:        maxBackoff,
 				Multiplier: backoffMultiplier,
 			},
-			md: md,
+			md: &md,
 		}
 
 		pause, shouldRetry := r.Retry(status.Error(codes.Aborted, ""))
@@ -320,15 +325,14 @@ func TestRetry(t *testing.T) {
 		}
 	}
 
-	md := grpcmd.New(map[string]string{})
-
+	md := grpcmd.New(nil)
 	r := &retryer{
 		backoff: gax.Backoff{
 			Initial:    initialBackoff,
 			Max:        maxBackoff,
 			Multiplier: backoffMultiplier,
 		},
-		md: md,
+		md: &md,
 	}
 	for i := 0; i < 100; i++ {
 		pause, shouldRetry := r.Retry(errors.New(""))

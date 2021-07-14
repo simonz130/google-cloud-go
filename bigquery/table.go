@@ -73,7 +73,7 @@ type TableMetadata struct {
 	// time partitioning or range partitioning can be specified.
 	TimePartitioning *TimePartitioning
 
-	// It non-nil, the table is partitioned by integer range.  Only one of
+	// If non-nil, the table is partitioned by integer range.  Only one of
 	// time partitioning or range partitioning can be specified.
 	RangePartitioning *RangePartitioning
 
@@ -119,6 +119,10 @@ type TableMetadata struct {
 	// The number of rows of data in this table.
 	// This does not include data that is being buffered during a streaming insert.
 	NumRows uint64
+
+	// SnapshotDefinition contains additional information about the provenance of a
+	// given snapshot table.
+	SnapshotDefinition *SnapshotDefinition
 
 	// Contains information regarding this table's streaming buffer, if one is
 	// present. This field will be nil if the table is not being streamed to or if
@@ -177,6 +181,9 @@ const (
 	// MaterializedView represents a managed storage table that's derived from
 	// a base table.
 	MaterializedView TableType = "MATERIALIZED_VIEW"
+	// Snapshot represents an immutable point in time snapshot of some other
+	// table.
+	Snapshot TableType = "SNAPSHOT"
 )
 
 // MaterializedViewDefinition contains information for materialized views.
@@ -223,6 +230,42 @@ func bqToMaterializedViewDefinition(q *bq.MaterializedViewDefinition) *Materiali
 	}
 }
 
+// SnapshotDefinition provides metadata related to the origin of a snapshot.
+type SnapshotDefinition struct {
+
+	// BaseTableReference describes the ID of the table that this snapshot
+	// came from.
+	BaseTableReference *Table
+
+	// SnapshotTime indicates when the base table was snapshot.
+	SnapshotTime time.Time
+}
+
+func (sd *SnapshotDefinition) toBQ() *bq.SnapshotDefinition {
+	if sd == nil {
+		return nil
+	}
+	return &bq.SnapshotDefinition{
+		BaseTableReference: sd.BaseTableReference.toBQ(),
+		SnapshotTime:       sd.SnapshotTime.Format(time.RFC3339),
+	}
+}
+
+func bqToSnapshotDefinition(q *bq.SnapshotDefinition, c *Client) *SnapshotDefinition {
+	if q == nil {
+		return nil
+	}
+	sd := &SnapshotDefinition{
+		BaseTableReference: bqToTable(q.BaseTableReference, c),
+	}
+	// It's possible we could fail to populate SnapshotTime if we fail to parse
+	// the backend representation.
+	if t, err := time.Parse(time.RFC3339, q.SnapshotTime); err == nil {
+		sd.SnapshotTime = t
+	}
+	return sd
+}
+
 // TimePartitioningType defines the interval used to partition managed data.
 type TimePartitioningType string
 
@@ -232,12 +275,19 @@ const (
 
 	// HourPartitioningType uses an hour-based interval for time partitioning.
 	HourPartitioningType TimePartitioningType = "HOUR"
+
+	// MonthPartitioningType uses a month-based interval for time partitioning.
+	MonthPartitioningType TimePartitioningType = "MONTH"
+
+	// YearPartitioningType uses a year-based interval for time partitioning.
+	YearPartitioningType TimePartitioningType = "YEAR"
 )
 
 // TimePartitioning describes the time-based date partitioning on a table.
 // For more information see: https://cloud.google.com/bigquery/docs/creating-partitioned-tables.
 type TimePartitioning struct {
-	// Defines the partition interval type.  Supported values are "DAY" or "HOUR".
+	// Defines the partition interval type.  Supported values are "HOUR", "DAY", "MONTH", and "YEAR".
+	// When the interval type is not specified, default behavior is DAY.
 	Type TimePartitioningType
 
 	// The amount of time to keep the storage for a partition.
@@ -349,7 +399,7 @@ func (rpr *RangePartitioningRange) toBQ() *bq.RangePartitioningRange {
 	}
 }
 
-// Clustering governs the organization of data within a partitioned table.
+// Clustering governs the organization of data within a managed table.
 // For more information, see https://cloud.google.com/bigquery/docs/clustered-tables
 type Clustering struct {
 	Fields []string
@@ -489,6 +539,7 @@ func (tm *TableMetadata) toBQ() (*bq.Table, error) {
 	t.RangePartitioning = tm.RangePartitioning.toBQ()
 	t.Clustering = tm.Clustering.toBQ()
 	t.RequirePartitionFilter = tm.RequirePartitionFilter
+	t.SnapshotDefinition = tm.SnapshotDefinition.toBQ()
 
 	if !validExpiration(tm.ExpirationTime) {
 		return nil, fmt.Errorf("invalid expiration time: %v.\n"+
@@ -547,10 +598,10 @@ func (t *Table) Metadata(ctx context.Context) (md *TableMetadata, err error) {
 	if err != nil {
 		return nil, err
 	}
-	return bqToTableMetadata(table)
+	return bqToTableMetadata(table, t.c)
 }
 
-func bqToTableMetadata(t *bq.Table) (*TableMetadata, error) {
+func bqToTableMetadata(t *bq.Table, c *Client) (*TableMetadata, error) {
 	md := &TableMetadata{
 		Description:            t.Description,
 		Name:                   t.FriendlyName,
@@ -567,6 +618,7 @@ func bqToTableMetadata(t *bq.Table) (*TableMetadata, error) {
 		ETag:                   t.Etag,
 		EncryptionConfig:       bqToEncryptionConfig(t.EncryptionConfiguration),
 		RequirePartitionFilter: t.RequirePartitionFilter,
+		SnapshotDefinition:     bqToSnapshotDefinition(t.SnapshotDefinition, c),
 	}
 	if t.MaterializedView != nil {
 		md.MaterializedView = bqToMaterializedViewDefinition(t.MaterializedView)
@@ -603,9 +655,13 @@ func (t *Table) Delete(ctx context.Context) (err error) {
 	ctx = trace.StartSpan(ctx, "cloud.google.com/go/bigquery.Table.Delete")
 	defer func() { trace.EndSpan(ctx, err) }()
 
-	req := t.c.bqs.Tables.Delete(t.ProjectID, t.DatasetID, t.TableID).Context(ctx)
-	setClientHeader(req.Header())
-	return req.Do()
+	call := t.c.bqs.Tables.Delete(t.ProjectID, t.DatasetID, t.TableID).Context(ctx)
+	setClientHeader(call.Header())
+
+	return runWithRetry(ctx, func() (err error) {
+		err = call.Do()
+		return err
+	})
 }
 
 // Read fetches the contents of the table.
@@ -641,7 +697,7 @@ func (t *Table) Update(ctx context.Context, tm TableMetadataToUpdate, etag strin
 	}); err != nil {
 		return nil, err
 	}
-	return bqToTableMetadata(res)
+	return bqToTableMetadata(res, t.c)
 }
 
 func (tm *TableMetadataToUpdate) toBQ() (*bq.Table, error) {
@@ -668,6 +724,10 @@ func (tm *TableMetadataToUpdate) toBQ() (*bq.Table, error) {
 	}
 	if tm.EncryptionConfig != nil {
 		t.EncryptionConfiguration = tm.EncryptionConfig.toBQ()
+	}
+
+	if tm.Clustering != nil {
+		t.Clustering = tm.Clustering.toBQ()
 	}
 
 	if !validExpiration(tm.ExpirationTime) {
@@ -738,6 +798,11 @@ type TableMetadataToUpdate struct {
 	// The table's schema.
 	// When updating a schema, you can add columns but not remove them.
 	Schema Schema
+
+	// The table's clustering configuration.
+	// For more information on how modifying clustering affects the table, see:
+	// https://cloud.google.com/bigquery/docs/creating-clustered-tables#modifying-cluster-spec
+	Clustering *Clustering
 
 	// The table's encryption configuration.
 	EncryptionConfig *EncryptionConfig

@@ -1,4 +1,4 @@
-// Copyright 2020 Google LLC
+// Copyright 2021 Google LLC
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -30,19 +30,19 @@ func ExampleNewConfigClient() {
 	if err != nil {
 		// TODO: Handle error.
 	}
+	defer c.Close()
+
 	// TODO: Use client.
 	_ = c
 }
 
 func ExampleConfigClient_ListBuckets() {
-	// import loggingpb "google.golang.org/genproto/googleapis/logging/v2"
-	// import "google.golang.org/api/iterator"
-
 	ctx := context.Background()
 	c, err := logging.NewConfigClient(ctx)
 	if err != nil {
 		// TODO: Handle error.
 	}
+	defer c.Close()
 
 	req := &loggingpb.ListBucketsRequest{
 		// TODO: Fill request struct fields.
@@ -62,13 +62,12 @@ func ExampleConfigClient_ListBuckets() {
 }
 
 func ExampleConfigClient_GetBucket() {
-	// import loggingpb "google.golang.org/genproto/googleapis/logging/v2"
-
 	ctx := context.Background()
 	c, err := logging.NewConfigClient(ctx)
 	if err != nil {
 		// TODO: Handle error.
 	}
+	defer c.Close()
 
 	req := &loggingpb.GetBucketRequest{
 		// TODO: Fill request struct fields.
@@ -81,14 +80,32 @@ func ExampleConfigClient_GetBucket() {
 	_ = resp
 }
 
-func ExampleConfigClient_UpdateBucket() {
-	// import loggingpb "google.golang.org/genproto/googleapis/logging/v2"
-
+func ExampleConfigClient_CreateBucket() {
 	ctx := context.Background()
 	c, err := logging.NewConfigClient(ctx)
 	if err != nil {
 		// TODO: Handle error.
 	}
+	defer c.Close()
+
+	req := &loggingpb.CreateBucketRequest{
+		// TODO: Fill request struct fields.
+	}
+	resp, err := c.CreateBucket(ctx, req)
+	if err != nil {
+		// TODO: Handle error.
+	}
+	// TODO: Use resp.
+	_ = resp
+}
+
+func ExampleConfigClient_UpdateBucket() {
+	ctx := context.Background()
+	c, err := logging.NewConfigClient(ctx)
+	if err != nil {
+		// TODO: Handle error.
+	}
+	defer c.Close()
 
 	req := &loggingpb.UpdateBucketRequest{
 		// TODO: Fill request struct fields.
@@ -101,15 +118,146 @@ func ExampleConfigClient_UpdateBucket() {
 	_ = resp
 }
 
-func ExampleConfigClient_ListSinks() {
-	// import loggingpb "google.golang.org/genproto/googleapis/logging/v2"
-	// import "google.golang.org/api/iterator"
-
+func ExampleConfigClient_DeleteBucket() {
 	ctx := context.Background()
 	c, err := logging.NewConfigClient(ctx)
 	if err != nil {
 		// TODO: Handle error.
 	}
+	defer c.Close()
+
+	req := &loggingpb.DeleteBucketRequest{
+		// TODO: Fill request struct fields.
+	}
+	err = c.DeleteBucket(ctx, req)
+	if err != nil {
+		// TODO: Handle error.
+	}
+}
+
+func ExampleConfigClient_UndeleteBucket() {
+	ctx := context.Background()
+	c, err := logging.NewConfigClient(ctx)
+	if err != nil {
+		// TODO: Handle error.
+	}
+	defer c.Close()
+
+	req := &loggingpb.UndeleteBucketRequest{
+		// TODO: Fill request struct fields.
+	}
+	err = c.UndeleteBucket(ctx, req)
+	if err != nil {
+		// TODO: Handle error.
+	}
+}
+
+func ExampleConfigClient_ListViews() {
+	ctx := context.Background()
+	c, err := logging.NewConfigClient(ctx)
+	if err != nil {
+		// TODO: Handle error.
+	}
+	defer c.Close()
+
+	req := &loggingpb.ListViewsRequest{
+		// TODO: Fill request struct fields.
+	}
+	it := c.ListViews(ctx, req)
+	for {
+		resp, err := it.Next()
+		if err == iterator.Done {
+			break
+		}
+		if err != nil {
+			// TODO: Handle error.
+		}
+		// TODO: Use resp.
+		_ = resp
+	}
+}
+
+func ExampleConfigClient_GetView() {
+	ctx := context.Background()
+	c, err := logging.NewConfigClient(ctx)
+	if err != nil {
+		// TODO: Handle error.
+	}
+	defer c.Close()
+
+	req := &loggingpb.GetViewRequest{
+		// TODO: Fill request struct fields.
+	}
+	resp, err := c.GetView(ctx, req)
+	if err != nil {
+		// TODO: Handle error.
+	}
+	// TODO: Use resp.
+	_ = resp
+}
+
+func ExampleConfigClient_CreateView() {
+	ctx := context.Background()
+	c, err := logging.NewConfigClient(ctx)
+	if err != nil {
+		// TODO: Handle error.
+	}
+	defer c.Close()
+
+	req := &loggingpb.CreateViewRequest{
+		// TODO: Fill request struct fields.
+	}
+	resp, err := c.CreateView(ctx, req)
+	if err != nil {
+		// TODO: Handle error.
+	}
+	// TODO: Use resp.
+	_ = resp
+}
+
+func ExampleConfigClient_UpdateView() {
+	ctx := context.Background()
+	c, err := logging.NewConfigClient(ctx)
+	if err != nil {
+		// TODO: Handle error.
+	}
+	defer c.Close()
+
+	req := &loggingpb.UpdateViewRequest{
+		// TODO: Fill request struct fields.
+	}
+	resp, err := c.UpdateView(ctx, req)
+	if err != nil {
+		// TODO: Handle error.
+	}
+	// TODO: Use resp.
+	_ = resp
+}
+
+func ExampleConfigClient_DeleteView() {
+	ctx := context.Background()
+	c, err := logging.NewConfigClient(ctx)
+	if err != nil {
+		// TODO: Handle error.
+	}
+	defer c.Close()
+
+	req := &loggingpb.DeleteViewRequest{
+		// TODO: Fill request struct fields.
+	}
+	err = c.DeleteView(ctx, req)
+	if err != nil {
+		// TODO: Handle error.
+	}
+}
+
+func ExampleConfigClient_ListSinks() {
+	ctx := context.Background()
+	c, err := logging.NewConfigClient(ctx)
+	if err != nil {
+		// TODO: Handle error.
+	}
+	defer c.Close()
 
 	req := &loggingpb.ListSinksRequest{
 		// TODO: Fill request struct fields.
@@ -129,13 +277,12 @@ func ExampleConfigClient_ListSinks() {
 }
 
 func ExampleConfigClient_GetSink() {
-	// import loggingpb "google.golang.org/genproto/googleapis/logging/v2"
-
 	ctx := context.Background()
 	c, err := logging.NewConfigClient(ctx)
 	if err != nil {
 		// TODO: Handle error.
 	}
+	defer c.Close()
 
 	req := &loggingpb.GetSinkRequest{
 		// TODO: Fill request struct fields.
@@ -149,13 +296,12 @@ func ExampleConfigClient_GetSink() {
 }
 
 func ExampleConfigClient_CreateSink() {
-	// import loggingpb "google.golang.org/genproto/googleapis/logging/v2"
-
 	ctx := context.Background()
 	c, err := logging.NewConfigClient(ctx)
 	if err != nil {
 		// TODO: Handle error.
 	}
+	defer c.Close()
 
 	req := &loggingpb.CreateSinkRequest{
 		// TODO: Fill request struct fields.
@@ -169,13 +315,12 @@ func ExampleConfigClient_CreateSink() {
 }
 
 func ExampleConfigClient_UpdateSink() {
-	// import loggingpb "google.golang.org/genproto/googleapis/logging/v2"
-
 	ctx := context.Background()
 	c, err := logging.NewConfigClient(ctx)
 	if err != nil {
 		// TODO: Handle error.
 	}
+	defer c.Close()
 
 	req := &loggingpb.UpdateSinkRequest{
 		// TODO: Fill request struct fields.
@@ -194,6 +339,7 @@ func ExampleConfigClient_DeleteSink() {
 	if err != nil {
 		// TODO: Handle error.
 	}
+	defer c.Close()
 
 	req := &loggingpb.DeleteSinkRequest{
 		// TODO: Fill request struct fields.
@@ -205,14 +351,12 @@ func ExampleConfigClient_DeleteSink() {
 }
 
 func ExampleConfigClient_ListExclusions() {
-	// import loggingpb "google.golang.org/genproto/googleapis/logging/v2"
-	// import "google.golang.org/api/iterator"
-
 	ctx := context.Background()
 	c, err := logging.NewConfigClient(ctx)
 	if err != nil {
 		// TODO: Handle error.
 	}
+	defer c.Close()
 
 	req := &loggingpb.ListExclusionsRequest{
 		// TODO: Fill request struct fields.
@@ -232,13 +376,12 @@ func ExampleConfigClient_ListExclusions() {
 }
 
 func ExampleConfigClient_GetExclusion() {
-	// import loggingpb "google.golang.org/genproto/googleapis/logging/v2"
-
 	ctx := context.Background()
 	c, err := logging.NewConfigClient(ctx)
 	if err != nil {
 		// TODO: Handle error.
 	}
+	defer c.Close()
 
 	req := &loggingpb.GetExclusionRequest{
 		// TODO: Fill request struct fields.
@@ -252,13 +395,12 @@ func ExampleConfigClient_GetExclusion() {
 }
 
 func ExampleConfigClient_CreateExclusion() {
-	// import loggingpb "google.golang.org/genproto/googleapis/logging/v2"
-
 	ctx := context.Background()
 	c, err := logging.NewConfigClient(ctx)
 	if err != nil {
 		// TODO: Handle error.
 	}
+	defer c.Close()
 
 	req := &loggingpb.CreateExclusionRequest{
 		// TODO: Fill request struct fields.
@@ -272,13 +414,12 @@ func ExampleConfigClient_CreateExclusion() {
 }
 
 func ExampleConfigClient_UpdateExclusion() {
-	// import loggingpb "google.golang.org/genproto/googleapis/logging/v2"
-
 	ctx := context.Background()
 	c, err := logging.NewConfigClient(ctx)
 	if err != nil {
 		// TODO: Handle error.
 	}
+	defer c.Close()
 
 	req := &loggingpb.UpdateExclusionRequest{
 		// TODO: Fill request struct fields.
@@ -297,6 +438,7 @@ func ExampleConfigClient_DeleteExclusion() {
 	if err != nil {
 		// TODO: Handle error.
 	}
+	defer c.Close()
 
 	req := &loggingpb.DeleteExclusionRequest{
 		// TODO: Fill request struct fields.
@@ -308,13 +450,12 @@ func ExampleConfigClient_DeleteExclusion() {
 }
 
 func ExampleConfigClient_GetCmekSettings() {
-	// import loggingpb "google.golang.org/genproto/googleapis/logging/v2"
-
 	ctx := context.Background()
 	c, err := logging.NewConfigClient(ctx)
 	if err != nil {
 		// TODO: Handle error.
 	}
+	defer c.Close()
 
 	req := &loggingpb.GetCmekSettingsRequest{
 		// TODO: Fill request struct fields.
@@ -328,13 +469,12 @@ func ExampleConfigClient_GetCmekSettings() {
 }
 
 func ExampleConfigClient_UpdateCmekSettings() {
-	// import loggingpb "google.golang.org/genproto/googleapis/logging/v2"
-
 	ctx := context.Background()
 	c, err := logging.NewConfigClient(ctx)
 	if err != nil {
 		// TODO: Handle error.
 	}
+	defer c.Close()
 
 	req := &loggingpb.UpdateCmekSettingsRequest{
 		// TODO: Fill request struct fields.

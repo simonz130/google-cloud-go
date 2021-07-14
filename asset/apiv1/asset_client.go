@@ -1,4 +1,4 @@
-// Copyright 2020 Google LLC
+// Copyright 2021 Google LLC
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -25,40 +25,45 @@ import (
 
 	"cloud.google.com/go/longrunning"
 	lroauto "cloud.google.com/go/longrunning/autogen"
-	"github.com/golang/protobuf/proto"
 	gax "github.com/googleapis/gax-go/v2"
 	"google.golang.org/api/iterator"
 	"google.golang.org/api/option"
+	"google.golang.org/api/option/internaloption"
 	gtransport "google.golang.org/api/transport/grpc"
 	assetpb "google.golang.org/genproto/googleapis/cloud/asset/v1"
 	longrunningpb "google.golang.org/genproto/googleapis/longrunning"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/protobuf/proto"
 )
 
 var newClientHook clientHook
 
 // CallOptions contains the retry settings for each method of Client.
 type CallOptions struct {
-	ExportAssets            []gax.CallOption
-	BatchGetAssetsHistory   []gax.CallOption
-	CreateFeed              []gax.CallOption
-	GetFeed                 []gax.CallOption
-	ListFeeds               []gax.CallOption
-	UpdateFeed              []gax.CallOption
-	DeleteFeed              []gax.CallOption
-	SearchAllResources      []gax.CallOption
-	SearchAllIamPolicies    []gax.CallOption
-	AnalyzeIamPolicy        []gax.CallOption
-	ExportIamPolicyAnalysis []gax.CallOption
+	ExportAssets                []gax.CallOption
+	ListAssets                  []gax.CallOption
+	BatchGetAssetsHistory       []gax.CallOption
+	CreateFeed                  []gax.CallOption
+	GetFeed                     []gax.CallOption
+	ListFeeds                   []gax.CallOption
+	UpdateFeed                  []gax.CallOption
+	DeleteFeed                  []gax.CallOption
+	SearchAllResources          []gax.CallOption
+	SearchAllIamPolicies        []gax.CallOption
+	AnalyzeIamPolicy            []gax.CallOption
+	AnalyzeIamPolicyLongrunning []gax.CallOption
 }
 
-func defaultClientOptions() []option.ClientOption {
+func defaultGRPCClientOptions() []option.ClientOption {
 	return []option.ClientOption{
-		option.WithEndpoint("cloudasset.googleapis.com:443"),
+		internaloption.WithDefaultEndpoint("cloudasset.googleapis.com:443"),
+		internaloption.WithDefaultMTLSEndpoint("cloudasset.mtls.googleapis.com:443"),
+		internaloption.WithDefaultAudience("https://cloudasset.googleapis.com/"),
+		internaloption.WithDefaultScopes(DefaultAuthScopes()...),
+		internaloption.EnableJwtWithScope(),
 		option.WithGRPCDialOption(grpc.WithDisableServiceConfig()),
-		option.WithScopes(DefaultAuthScopes()...),
 		option.WithGRPCDialOption(grpc.WithDefaultCallOptions(
 			grpc.MaxCallRecvMsgSize(math.MaxInt32))),
 	}
@@ -67,6 +72,18 @@ func defaultClientOptions() []option.ClientOption {
 func defaultCallOptions() *CallOptions {
 	return &CallOptions{
 		ExportAssets: []gax.CallOption{},
+		ListAssets: []gax.CallOption{
+			gax.WithRetry(func() gax.Retryer {
+				return gax.OnCodes([]codes.Code{
+					codes.DeadlineExceeded,
+					codes.Unavailable,
+				}, gax.Backoff{
+					Initial:    100 * time.Millisecond,
+					Max:        60000 * time.Millisecond,
+					Multiplier: 1.30,
+				})
+			}),
+		},
 		BatchGetAssetsHistory: []gax.CallOption{
 			gax.WithRetry(func() gax.Retryer {
 				return gax.OnCodes([]codes.Code{
@@ -120,7 +137,6 @@ func defaultCallOptions() *CallOptions {
 		SearchAllResources: []gax.CallOption{
 			gax.WithRetry(func() gax.Retryer {
 				return gax.OnCodes([]codes.Code{
-					codes.DeadlineExceeded,
 					codes.Unavailable,
 				}, gax.Backoff{
 					Initial:    100 * time.Millisecond,
@@ -132,7 +148,6 @@ func defaultCallOptions() *CallOptions {
 		SearchAllIamPolicies: []gax.CallOption{
 			gax.WithRetry(func() gax.Retryer {
 				return gax.OnCodes([]codes.Code{
-					codes.DeadlineExceeded,
 					codes.Unavailable,
 				}, gax.Backoff{
 					Initial:    100 * time.Millisecond,
@@ -152,91 +167,68 @@ func defaultCallOptions() *CallOptions {
 				})
 			}),
 		},
-		ExportIamPolicyAnalysis: []gax.CallOption{},
+		AnalyzeIamPolicyLongrunning: []gax.CallOption{},
 	}
 }
 
+// internalClient is an interface that defines the methods availaible from Cloud Asset API.
+type internalClient interface {
+	Close() error
+	setGoogleClientInfo(...string)
+	Connection() *grpc.ClientConn
+	ExportAssets(context.Context, *assetpb.ExportAssetsRequest, ...gax.CallOption) (*ExportAssetsOperation, error)
+	ExportAssetsOperation(name string) *ExportAssetsOperation
+	ListAssets(context.Context, *assetpb.ListAssetsRequest, ...gax.CallOption) *AssetIterator
+	BatchGetAssetsHistory(context.Context, *assetpb.BatchGetAssetsHistoryRequest, ...gax.CallOption) (*assetpb.BatchGetAssetsHistoryResponse, error)
+	CreateFeed(context.Context, *assetpb.CreateFeedRequest, ...gax.CallOption) (*assetpb.Feed, error)
+	GetFeed(context.Context, *assetpb.GetFeedRequest, ...gax.CallOption) (*assetpb.Feed, error)
+	ListFeeds(context.Context, *assetpb.ListFeedsRequest, ...gax.CallOption) (*assetpb.ListFeedsResponse, error)
+	UpdateFeed(context.Context, *assetpb.UpdateFeedRequest, ...gax.CallOption) (*assetpb.Feed, error)
+	DeleteFeed(context.Context, *assetpb.DeleteFeedRequest, ...gax.CallOption) error
+	SearchAllResources(context.Context, *assetpb.SearchAllResourcesRequest, ...gax.CallOption) *ResourceSearchResultIterator
+	SearchAllIamPolicies(context.Context, *assetpb.SearchAllIamPoliciesRequest, ...gax.CallOption) *IamPolicySearchResultIterator
+	AnalyzeIamPolicy(context.Context, *assetpb.AnalyzeIamPolicyRequest, ...gax.CallOption) (*assetpb.AnalyzeIamPolicyResponse, error)
+	AnalyzeIamPolicyLongrunning(context.Context, *assetpb.AnalyzeIamPolicyLongrunningRequest, ...gax.CallOption) (*AnalyzeIamPolicyLongrunningOperation, error)
+	AnalyzeIamPolicyLongrunningOperation(name string) *AnalyzeIamPolicyLongrunningOperation
+}
+
 // Client is a client for interacting with Cloud Asset API.
-//
 // Methods, except Close, may be called concurrently. However, fields must not be modified concurrently with method calls.
+//
+// Asset service definition.
 type Client struct {
-	// Connection pool of gRPC connections to the service.
-	connPool gtransport.ConnPool
-
-	// The gRPC API client.
-	client assetpb.AssetServiceClient
-
-	// LROClient is used internally to handle longrunning operations.
-	// It is exposed so that its CallOptions can be modified if required.
-	// Users should not Close this client.
-	LROClient *lroauto.OperationsClient
+	// The internal transport-dependent client.
+	internalClient internalClient
 
 	// The call options for this service.
 	CallOptions *CallOptions
 
-	// The x-goog-* metadata to be sent with each request.
-	xGoogMetadata metadata.MD
+	// LROClient is used internally to handle long-running operations.
+	// It is exposed so that its CallOptions can be modified if required.
+	// Users should not Close this client.
+	LROClient *lroauto.OperationsClient
 }
 
-// NewClient creates a new asset service client.
-//
-// Asset service definition.
-func NewClient(ctx context.Context, opts ...option.ClientOption) (*Client, error) {
-	clientOpts := defaultClientOptions()
-
-	if newClientHook != nil {
-		hookOpts, err := newClientHook(ctx, clientHookParams{})
-		if err != nil {
-			return nil, err
-		}
-		clientOpts = append(clientOpts, hookOpts...)
-	}
-
-	connPool, err := gtransport.DialPool(ctx, append(clientOpts, opts...)...)
-	if err != nil {
-		return nil, err
-	}
-	c := &Client{
-		connPool:    connPool,
-		CallOptions: defaultCallOptions(),
-
-		client: assetpb.NewAssetServiceClient(connPool),
-	}
-	c.setGoogleClientInfo()
-
-	c.LROClient, err = lroauto.NewOperationsClient(ctx, gtransport.WithConnPool(connPool))
-	if err != nil {
-		// This error "should not happen", since we are just reusing old connection pool
-		// and never actually need to dial.
-		// If this does happen, we could leak connp. However, we cannot close conn:
-		// If the user invoked the constructor with option.WithGRPCConn,
-		// we would close a connection that's still in use.
-		// TODO: investigate error conditions.
-		return nil, err
-	}
-	return c, nil
-}
-
-// Connection returns a connection to the API service.
-//
-// Deprecated.
-func (c *Client) Connection() *grpc.ClientConn {
-	return c.connPool.Conn()
-}
+// Wrapper methods routed to the internal client.
 
 // Close closes the connection to the API service. The user should invoke this when
 // the client is no longer required.
 func (c *Client) Close() error {
-	return c.connPool.Close()
+	return c.internalClient.Close()
 }
 
 // setGoogleClientInfo sets the name and version of the application in
 // the `x-goog-api-client` header passed on each request. Intended for
 // use by Google-written clients.
 func (c *Client) setGoogleClientInfo(keyval ...string) {
-	kv := append([]string{"gl-go", versionGo()}, keyval...)
-	kv = append(kv, "gapic", versionClient, "gax", gax.Version, "grpc", grpc.Version)
-	c.xGoogMetadata = metadata.Pairs("x-goog-api-client", gax.XGoogHeader(kv...))
+	c.internalClient.setGoogleClientInfo(keyval...)
+}
+
+// Connection returns a connection to the API service.
+//
+// Deprecated.
+func (c *Client) Connection() *grpc.ClientConn {
+	return c.internalClient.Connection()
 }
 
 // ExportAssets exports assets with time and resource types to a given Cloud Storage
@@ -250,21 +242,19 @@ func (c *Client) setGoogleClientInfo(keyval ...string) {
 // result. For regular-size resource parent, the export operation usually
 // finishes within 5 minutes.
 func (c *Client) ExportAssets(ctx context.Context, req *assetpb.ExportAssetsRequest, opts ...gax.CallOption) (*ExportAssetsOperation, error) {
-	md := metadata.Pairs("x-goog-request-params", fmt.Sprintf("%s=%v", "parent", url.QueryEscape(req.GetParent())))
-	ctx = insertMetadata(ctx, c.xGoogMetadata, md)
-	opts = append(c.CallOptions.ExportAssets[0:len(c.CallOptions.ExportAssets):len(c.CallOptions.ExportAssets)], opts...)
-	var resp *longrunningpb.Operation
-	err := gax.Invoke(ctx, func(ctx context.Context, settings gax.CallSettings) error {
-		var err error
-		resp, err = c.client.ExportAssets(ctx, req, settings.GRPC...)
-		return err
-	}, opts...)
-	if err != nil {
-		return nil, err
-	}
-	return &ExportAssetsOperation{
-		lro: longrunning.InternalNewOperation(c.LROClient, resp),
-	}, nil
+	return c.internalClient.ExportAssets(ctx, req, opts...)
+}
+
+// ExportAssetsOperation returns a new ExportAssetsOperation from a given name.
+// The name must be that of a previously created ExportAssetsOperation, possibly from a different process.
+func (c *Client) ExportAssetsOperation(name string) *ExportAssetsOperation {
+	return c.internalClient.ExportAssetsOperation(name)
+}
+
+// ListAssets lists assets with time and resource types and returns paged results in
+// response.
+func (c *Client) ListAssets(ctx context.Context, req *assetpb.ListAssetsRequest, opts ...gax.CallOption) *AssetIterator {
+	return c.internalClient.ListAssets(ctx, req, opts...)
 }
 
 // BatchGetAssetsHistory batch gets the update history of assets that overlap a time window.
@@ -275,9 +265,244 @@ func (c *Client) ExportAssets(ctx context.Context, req *assetpb.ExportAssetsRequ
 // If a specified asset does not exist, this API returns an INVALID_ARGUMENT
 // error.
 func (c *Client) BatchGetAssetsHistory(ctx context.Context, req *assetpb.BatchGetAssetsHistoryRequest, opts ...gax.CallOption) (*assetpb.BatchGetAssetsHistoryResponse, error) {
+	return c.internalClient.BatchGetAssetsHistory(ctx, req, opts...)
+}
+
+// CreateFeed creates a feed in a parent project/folder/organization to listen to its
+// asset updates.
+func (c *Client) CreateFeed(ctx context.Context, req *assetpb.CreateFeedRequest, opts ...gax.CallOption) (*assetpb.Feed, error) {
+	return c.internalClient.CreateFeed(ctx, req, opts...)
+}
+
+// GetFeed gets details about an asset feed.
+func (c *Client) GetFeed(ctx context.Context, req *assetpb.GetFeedRequest, opts ...gax.CallOption) (*assetpb.Feed, error) {
+	return c.internalClient.GetFeed(ctx, req, opts...)
+}
+
+// ListFeeds lists all asset feeds in a parent project/folder/organization.
+func (c *Client) ListFeeds(ctx context.Context, req *assetpb.ListFeedsRequest, opts ...gax.CallOption) (*assetpb.ListFeedsResponse, error) {
+	return c.internalClient.ListFeeds(ctx, req, opts...)
+}
+
+// UpdateFeed updates an asset feed configuration.
+func (c *Client) UpdateFeed(ctx context.Context, req *assetpb.UpdateFeedRequest, opts ...gax.CallOption) (*assetpb.Feed, error) {
+	return c.internalClient.UpdateFeed(ctx, req, opts...)
+}
+
+// DeleteFeed deletes an asset feed.
+func (c *Client) DeleteFeed(ctx context.Context, req *assetpb.DeleteFeedRequest, opts ...gax.CallOption) error {
+	return c.internalClient.DeleteFeed(ctx, req, opts...)
+}
+
+// SearchAllResources searches all Cloud resources within the specified scope, such as a project,
+// folder, or organization. The caller must be granted the
+// cloudasset.assets.searchAllResources permission on the desired scope,
+// otherwise the request will be rejected.
+func (c *Client) SearchAllResources(ctx context.Context, req *assetpb.SearchAllResourcesRequest, opts ...gax.CallOption) *ResourceSearchResultIterator {
+	return c.internalClient.SearchAllResources(ctx, req, opts...)
+}
+
+// SearchAllIamPolicies searches all IAM policies within the specified scope, such as a project,
+// folder, or organization. The caller must be granted the
+// cloudasset.assets.searchAllIamPolicies permission on the desired scope,
+// otherwise the request will be rejected.
+func (c *Client) SearchAllIamPolicies(ctx context.Context, req *assetpb.SearchAllIamPoliciesRequest, opts ...gax.CallOption) *IamPolicySearchResultIterator {
+	return c.internalClient.SearchAllIamPolicies(ctx, req, opts...)
+}
+
+// AnalyzeIamPolicy analyzes IAM policies to answer which identities have what accesses on
+// which resources.
+func (c *Client) AnalyzeIamPolicy(ctx context.Context, req *assetpb.AnalyzeIamPolicyRequest, opts ...gax.CallOption) (*assetpb.AnalyzeIamPolicyResponse, error) {
+	return c.internalClient.AnalyzeIamPolicy(ctx, req, opts...)
+}
+
+// AnalyzeIamPolicyLongrunning analyzes IAM policies asynchronously to answer which identities have what
+// accesses on which resources, and writes the analysis results to a Google
+// Cloud Storage or a BigQuery destination. For Cloud Storage destination, the
+// output format is the JSON format that represents a
+// AnalyzeIamPolicyResponse. This method implements the
+// google.longrunning.Operation, which allows you to track the operation
+// status. We recommend intervals of at least 2 seconds with exponential
+// backoff retry to poll the operation result. The metadata contains the
+// request to help callers to map responses to requests.
+func (c *Client) AnalyzeIamPolicyLongrunning(ctx context.Context, req *assetpb.AnalyzeIamPolicyLongrunningRequest, opts ...gax.CallOption) (*AnalyzeIamPolicyLongrunningOperation, error) {
+	return c.internalClient.AnalyzeIamPolicyLongrunning(ctx, req, opts...)
+}
+
+// AnalyzeIamPolicyLongrunningOperation returns a new AnalyzeIamPolicyLongrunningOperation from a given name.
+// The name must be that of a previously created AnalyzeIamPolicyLongrunningOperation, possibly from a different process.
+func (c *Client) AnalyzeIamPolicyLongrunningOperation(name string) *AnalyzeIamPolicyLongrunningOperation {
+	return c.internalClient.AnalyzeIamPolicyLongrunningOperation(name)
+}
+
+// gRPCClient is a client for interacting with Cloud Asset API over gRPC transport.
+//
+// Methods, except Close, may be called concurrently. However, fields must not be modified concurrently with method calls.
+type gRPCClient struct {
+	// Connection pool of gRPC connections to the service.
+	connPool gtransport.ConnPool
+
+	// flag to opt out of default deadlines via GOOGLE_API_GO_EXPERIMENTAL_DISABLE_DEFAULT_DEADLINE
+	disableDeadlines bool
+
+	// Points back to the CallOptions field of the containing Client
+	CallOptions **CallOptions
+
+	// The gRPC API client.
+	client assetpb.AssetServiceClient
+
+	// LROClient is used internally to handle long-running operations.
+	// It is exposed so that its CallOptions can be modified if required.
+	// Users should not Close this client.
+	LROClient **lroauto.OperationsClient
+
+	// The x-goog-* metadata to be sent with each request.
+	xGoogMetadata metadata.MD
+}
+
+// NewClient creates a new asset service client based on gRPC.
+// The returned client must be Closed when it is done being used to clean up its underlying connections.
+//
+// Asset service definition.
+func NewClient(ctx context.Context, opts ...option.ClientOption) (*Client, error) {
+	clientOpts := defaultGRPCClientOptions()
+	if newClientHook != nil {
+		hookOpts, err := newClientHook(ctx, clientHookParams{})
+		if err != nil {
+			return nil, err
+		}
+		clientOpts = append(clientOpts, hookOpts...)
+	}
+
+	disableDeadlines, err := checkDisableDeadlines()
+	if err != nil {
+		return nil, err
+	}
+
+	connPool, err := gtransport.DialPool(ctx, append(clientOpts, opts...)...)
+	if err != nil {
+		return nil, err
+	}
+	client := Client{CallOptions: defaultCallOptions()}
+
+	c := &gRPCClient{
+		connPool:         connPool,
+		disableDeadlines: disableDeadlines,
+		client:           assetpb.NewAssetServiceClient(connPool),
+		CallOptions:      &client.CallOptions,
+	}
+	c.setGoogleClientInfo()
+
+	client.internalClient = c
+
+	client.LROClient, err = lroauto.NewOperationsClient(ctx, gtransport.WithConnPool(connPool))
+	if err != nil {
+		// This error "should not happen", since we are just reusing old connection pool
+		// and never actually need to dial.
+		// If this does happen, we could leak connp. However, we cannot close conn:
+		// If the user invoked the constructor with option.WithGRPCConn,
+		// we would close a connection that's still in use.
+		// TODO: investigate error conditions.
+		return nil, err
+	}
+	c.LROClient = &client.LROClient
+	return &client, nil
+}
+
+// Connection returns a connection to the API service.
+//
+// Deprecated.
+func (c *gRPCClient) Connection() *grpc.ClientConn {
+	return c.connPool.Conn()
+}
+
+// setGoogleClientInfo sets the name and version of the application in
+// the `x-goog-api-client` header passed on each request. Intended for
+// use by Google-written clients.
+func (c *gRPCClient) setGoogleClientInfo(keyval ...string) {
+	kv := append([]string{"gl-go", versionGo()}, keyval...)
+	kv = append(kv, "gapic", versionClient, "gax", gax.Version, "grpc", grpc.Version)
+	c.xGoogMetadata = metadata.Pairs("x-goog-api-client", gax.XGoogHeader(kv...))
+}
+
+// Close closes the connection to the API service. The user should invoke this when
+// the client is no longer required.
+func (c *gRPCClient) Close() error {
+	return c.connPool.Close()
+}
+
+func (c *gRPCClient) ExportAssets(ctx context.Context, req *assetpb.ExportAssetsRequest, opts ...gax.CallOption) (*ExportAssetsOperation, error) {
+	if _, ok := ctx.Deadline(); !ok && !c.disableDeadlines {
+		cctx, cancel := context.WithTimeout(ctx, 60000*time.Millisecond)
+		defer cancel()
+		ctx = cctx
+	}
 	md := metadata.Pairs("x-goog-request-params", fmt.Sprintf("%s=%v", "parent", url.QueryEscape(req.GetParent())))
 	ctx = insertMetadata(ctx, c.xGoogMetadata, md)
-	opts = append(c.CallOptions.BatchGetAssetsHistory[0:len(c.CallOptions.BatchGetAssetsHistory):len(c.CallOptions.BatchGetAssetsHistory)], opts...)
+	opts = append((*c.CallOptions).ExportAssets[0:len((*c.CallOptions).ExportAssets):len((*c.CallOptions).ExportAssets)], opts...)
+	var resp *longrunningpb.Operation
+	err := gax.Invoke(ctx, func(ctx context.Context, settings gax.CallSettings) error {
+		var err error
+		resp, err = c.client.ExportAssets(ctx, req, settings.GRPC...)
+		return err
+	}, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return &ExportAssetsOperation{
+		lro: longrunning.InternalNewOperation(*c.LROClient, resp),
+	}, nil
+}
+
+func (c *gRPCClient) ListAssets(ctx context.Context, req *assetpb.ListAssetsRequest, opts ...gax.CallOption) *AssetIterator {
+	md := metadata.Pairs("x-goog-request-params", fmt.Sprintf("%s=%v", "parent", url.QueryEscape(req.GetParent())))
+	ctx = insertMetadata(ctx, c.xGoogMetadata, md)
+	opts = append((*c.CallOptions).ListAssets[0:len((*c.CallOptions).ListAssets):len((*c.CallOptions).ListAssets)], opts...)
+	it := &AssetIterator{}
+	req = proto.Clone(req).(*assetpb.ListAssetsRequest)
+	it.InternalFetch = func(pageSize int, pageToken string) ([]*assetpb.Asset, string, error) {
+		var resp *assetpb.ListAssetsResponse
+		req.PageToken = pageToken
+		if pageSize > math.MaxInt32 {
+			req.PageSize = math.MaxInt32
+		} else {
+			req.PageSize = int32(pageSize)
+		}
+		err := gax.Invoke(ctx, func(ctx context.Context, settings gax.CallSettings) error {
+			var err error
+			resp, err = c.client.ListAssets(ctx, req, settings.GRPC...)
+			return err
+		}, opts...)
+		if err != nil {
+			return nil, "", err
+		}
+
+		it.Response = resp
+		return resp.GetAssets(), resp.GetNextPageToken(), nil
+	}
+	fetch := func(pageSize int, pageToken string) (string, error) {
+		items, nextPageToken, err := it.InternalFetch(pageSize, pageToken)
+		if err != nil {
+			return "", err
+		}
+		it.items = append(it.items, items...)
+		return nextPageToken, nil
+	}
+	it.pageInfo, it.nextFunc = iterator.NewPageInfo(fetch, it.bufLen, it.takeBuf)
+	it.pageInfo.MaxSize = int(req.GetPageSize())
+	it.pageInfo.Token = req.GetPageToken()
+	return it
+}
+
+func (c *gRPCClient) BatchGetAssetsHistory(ctx context.Context, req *assetpb.BatchGetAssetsHistoryRequest, opts ...gax.CallOption) (*assetpb.BatchGetAssetsHistoryResponse, error) {
+	if _, ok := ctx.Deadline(); !ok && !c.disableDeadlines {
+		cctx, cancel := context.WithTimeout(ctx, 60000*time.Millisecond)
+		defer cancel()
+		ctx = cctx
+	}
+	md := metadata.Pairs("x-goog-request-params", fmt.Sprintf("%s=%v", "parent", url.QueryEscape(req.GetParent())))
+	ctx = insertMetadata(ctx, c.xGoogMetadata, md)
+	opts = append((*c.CallOptions).BatchGetAssetsHistory[0:len((*c.CallOptions).BatchGetAssetsHistory):len((*c.CallOptions).BatchGetAssetsHistory)], opts...)
 	var resp *assetpb.BatchGetAssetsHistoryResponse
 	err := gax.Invoke(ctx, func(ctx context.Context, settings gax.CallSettings) error {
 		var err error
@@ -290,12 +515,15 @@ func (c *Client) BatchGetAssetsHistory(ctx context.Context, req *assetpb.BatchGe
 	return resp, nil
 }
 
-// CreateFeed creates a feed in a parent project/folder/organization to listen to its
-// asset updates.
-func (c *Client) CreateFeed(ctx context.Context, req *assetpb.CreateFeedRequest, opts ...gax.CallOption) (*assetpb.Feed, error) {
+func (c *gRPCClient) CreateFeed(ctx context.Context, req *assetpb.CreateFeedRequest, opts ...gax.CallOption) (*assetpb.Feed, error) {
+	if _, ok := ctx.Deadline(); !ok && !c.disableDeadlines {
+		cctx, cancel := context.WithTimeout(ctx, 60000*time.Millisecond)
+		defer cancel()
+		ctx = cctx
+	}
 	md := metadata.Pairs("x-goog-request-params", fmt.Sprintf("%s=%v", "parent", url.QueryEscape(req.GetParent())))
 	ctx = insertMetadata(ctx, c.xGoogMetadata, md)
-	opts = append(c.CallOptions.CreateFeed[0:len(c.CallOptions.CreateFeed):len(c.CallOptions.CreateFeed)], opts...)
+	opts = append((*c.CallOptions).CreateFeed[0:len((*c.CallOptions).CreateFeed):len((*c.CallOptions).CreateFeed)], opts...)
 	var resp *assetpb.Feed
 	err := gax.Invoke(ctx, func(ctx context.Context, settings gax.CallSettings) error {
 		var err error
@@ -308,11 +536,15 @@ func (c *Client) CreateFeed(ctx context.Context, req *assetpb.CreateFeedRequest,
 	return resp, nil
 }
 
-// GetFeed gets details about an asset feed.
-func (c *Client) GetFeed(ctx context.Context, req *assetpb.GetFeedRequest, opts ...gax.CallOption) (*assetpb.Feed, error) {
+func (c *gRPCClient) GetFeed(ctx context.Context, req *assetpb.GetFeedRequest, opts ...gax.CallOption) (*assetpb.Feed, error) {
+	if _, ok := ctx.Deadline(); !ok && !c.disableDeadlines {
+		cctx, cancel := context.WithTimeout(ctx, 60000*time.Millisecond)
+		defer cancel()
+		ctx = cctx
+	}
 	md := metadata.Pairs("x-goog-request-params", fmt.Sprintf("%s=%v", "name", url.QueryEscape(req.GetName())))
 	ctx = insertMetadata(ctx, c.xGoogMetadata, md)
-	opts = append(c.CallOptions.GetFeed[0:len(c.CallOptions.GetFeed):len(c.CallOptions.GetFeed)], opts...)
+	opts = append((*c.CallOptions).GetFeed[0:len((*c.CallOptions).GetFeed):len((*c.CallOptions).GetFeed)], opts...)
 	var resp *assetpb.Feed
 	err := gax.Invoke(ctx, func(ctx context.Context, settings gax.CallSettings) error {
 		var err error
@@ -325,11 +557,15 @@ func (c *Client) GetFeed(ctx context.Context, req *assetpb.GetFeedRequest, opts 
 	return resp, nil
 }
 
-// ListFeeds lists all asset feeds in a parent project/folder/organization.
-func (c *Client) ListFeeds(ctx context.Context, req *assetpb.ListFeedsRequest, opts ...gax.CallOption) (*assetpb.ListFeedsResponse, error) {
+func (c *gRPCClient) ListFeeds(ctx context.Context, req *assetpb.ListFeedsRequest, opts ...gax.CallOption) (*assetpb.ListFeedsResponse, error) {
+	if _, ok := ctx.Deadline(); !ok && !c.disableDeadlines {
+		cctx, cancel := context.WithTimeout(ctx, 60000*time.Millisecond)
+		defer cancel()
+		ctx = cctx
+	}
 	md := metadata.Pairs("x-goog-request-params", fmt.Sprintf("%s=%v", "parent", url.QueryEscape(req.GetParent())))
 	ctx = insertMetadata(ctx, c.xGoogMetadata, md)
-	opts = append(c.CallOptions.ListFeeds[0:len(c.CallOptions.ListFeeds):len(c.CallOptions.ListFeeds)], opts...)
+	opts = append((*c.CallOptions).ListFeeds[0:len((*c.CallOptions).ListFeeds):len((*c.CallOptions).ListFeeds)], opts...)
 	var resp *assetpb.ListFeedsResponse
 	err := gax.Invoke(ctx, func(ctx context.Context, settings gax.CallSettings) error {
 		var err error
@@ -342,11 +578,15 @@ func (c *Client) ListFeeds(ctx context.Context, req *assetpb.ListFeedsRequest, o
 	return resp, nil
 }
 
-// UpdateFeed updates an asset feed configuration.
-func (c *Client) UpdateFeed(ctx context.Context, req *assetpb.UpdateFeedRequest, opts ...gax.CallOption) (*assetpb.Feed, error) {
+func (c *gRPCClient) UpdateFeed(ctx context.Context, req *assetpb.UpdateFeedRequest, opts ...gax.CallOption) (*assetpb.Feed, error) {
+	if _, ok := ctx.Deadline(); !ok && !c.disableDeadlines {
+		cctx, cancel := context.WithTimeout(ctx, 60000*time.Millisecond)
+		defer cancel()
+		ctx = cctx
+	}
 	md := metadata.Pairs("x-goog-request-params", fmt.Sprintf("%s=%v", "feed.name", url.QueryEscape(req.GetFeed().GetName())))
 	ctx = insertMetadata(ctx, c.xGoogMetadata, md)
-	opts = append(c.CallOptions.UpdateFeed[0:len(c.CallOptions.UpdateFeed):len(c.CallOptions.UpdateFeed)], opts...)
+	opts = append((*c.CallOptions).UpdateFeed[0:len((*c.CallOptions).UpdateFeed):len((*c.CallOptions).UpdateFeed)], opts...)
 	var resp *assetpb.Feed
 	err := gax.Invoke(ctx, func(ctx context.Context, settings gax.CallSettings) error {
 		var err error
@@ -359,11 +599,15 @@ func (c *Client) UpdateFeed(ctx context.Context, req *assetpb.UpdateFeedRequest,
 	return resp, nil
 }
 
-// DeleteFeed deletes an asset feed.
-func (c *Client) DeleteFeed(ctx context.Context, req *assetpb.DeleteFeedRequest, opts ...gax.CallOption) error {
+func (c *gRPCClient) DeleteFeed(ctx context.Context, req *assetpb.DeleteFeedRequest, opts ...gax.CallOption) error {
+	if _, ok := ctx.Deadline(); !ok && !c.disableDeadlines {
+		cctx, cancel := context.WithTimeout(ctx, 60000*time.Millisecond)
+		defer cancel()
+		ctx = cctx
+	}
 	md := metadata.Pairs("x-goog-request-params", fmt.Sprintf("%s=%v", "name", url.QueryEscape(req.GetName())))
 	ctx = insertMetadata(ctx, c.xGoogMetadata, md)
-	opts = append(c.CallOptions.DeleteFeed[0:len(c.CallOptions.DeleteFeed):len(c.CallOptions.DeleteFeed)], opts...)
+	opts = append((*c.CallOptions).DeleteFeed[0:len((*c.CallOptions).DeleteFeed):len((*c.CallOptions).DeleteFeed)], opts...)
 	err := gax.Invoke(ctx, func(ctx context.Context, settings gax.CallSettings) error {
 		var err error
 		_, err = c.client.DeleteFeed(ctx, req, settings.GRPC...)
@@ -372,14 +616,10 @@ func (c *Client) DeleteFeed(ctx context.Context, req *assetpb.DeleteFeedRequest,
 	return err
 }
 
-// SearchAllResources searches all Cloud resources within the specified scope, such as a project,
-// folder, or organization. The caller must be granted the
-// cloudasset.assets.searchAllResources permission on the desired scope,
-// otherwise the request will be rejected.
-func (c *Client) SearchAllResources(ctx context.Context, req *assetpb.SearchAllResourcesRequest, opts ...gax.CallOption) *ResourceSearchResultIterator {
+func (c *gRPCClient) SearchAllResources(ctx context.Context, req *assetpb.SearchAllResourcesRequest, opts ...gax.CallOption) *ResourceSearchResultIterator {
 	md := metadata.Pairs("x-goog-request-params", fmt.Sprintf("%s=%v", "scope", url.QueryEscape(req.GetScope())))
 	ctx = insertMetadata(ctx, c.xGoogMetadata, md)
-	opts = append(c.CallOptions.SearchAllResources[0:len(c.CallOptions.SearchAllResources):len(c.CallOptions.SearchAllResources)], opts...)
+	opts = append((*c.CallOptions).SearchAllResources[0:len((*c.CallOptions).SearchAllResources):len((*c.CallOptions).SearchAllResources)], opts...)
 	it := &ResourceSearchResultIterator{}
 	req = proto.Clone(req).(*assetpb.SearchAllResourcesRequest)
 	it.InternalFetch = func(pageSize int, pageToken string) ([]*assetpb.ResourceSearchResult, string, error) {
@@ -416,14 +656,10 @@ func (c *Client) SearchAllResources(ctx context.Context, req *assetpb.SearchAllR
 	return it
 }
 
-// SearchAllIamPolicies searches all IAM policies within the specified scope, such as a project,
-// folder, or organization. The caller must be granted the
-// cloudasset.assets.searchAllIamPolicies permission on the desired scope,
-// otherwise the request will be rejected.
-func (c *Client) SearchAllIamPolicies(ctx context.Context, req *assetpb.SearchAllIamPoliciesRequest, opts ...gax.CallOption) *IamPolicySearchResultIterator {
+func (c *gRPCClient) SearchAllIamPolicies(ctx context.Context, req *assetpb.SearchAllIamPoliciesRequest, opts ...gax.CallOption) *IamPolicySearchResultIterator {
 	md := metadata.Pairs("x-goog-request-params", fmt.Sprintf("%s=%v", "scope", url.QueryEscape(req.GetScope())))
 	ctx = insertMetadata(ctx, c.xGoogMetadata, md)
-	opts = append(c.CallOptions.SearchAllIamPolicies[0:len(c.CallOptions.SearchAllIamPolicies):len(c.CallOptions.SearchAllIamPolicies)], opts...)
+	opts = append((*c.CallOptions).SearchAllIamPolicies[0:len((*c.CallOptions).SearchAllIamPolicies):len((*c.CallOptions).SearchAllIamPolicies)], opts...)
 	it := &IamPolicySearchResultIterator{}
 	req = proto.Clone(req).(*assetpb.SearchAllIamPoliciesRequest)
 	it.InternalFetch = func(pageSize int, pageToken string) ([]*assetpb.IamPolicySearchResult, string, error) {
@@ -460,12 +696,15 @@ func (c *Client) SearchAllIamPolicies(ctx context.Context, req *assetpb.SearchAl
 	return it
 }
 
-// AnalyzeIamPolicy analyzes IAM policies to answer which identities have what accesses on
-// which resources.
-func (c *Client) AnalyzeIamPolicy(ctx context.Context, req *assetpb.AnalyzeIamPolicyRequest, opts ...gax.CallOption) (*assetpb.AnalyzeIamPolicyResponse, error) {
+func (c *gRPCClient) AnalyzeIamPolicy(ctx context.Context, req *assetpb.AnalyzeIamPolicyRequest, opts ...gax.CallOption) (*assetpb.AnalyzeIamPolicyResponse, error) {
+	if _, ok := ctx.Deadline(); !ok && !c.disableDeadlines {
+		cctx, cancel := context.WithTimeout(ctx, 300000*time.Millisecond)
+		defer cancel()
+		ctx = cctx
+	}
 	md := metadata.Pairs("x-goog-request-params", fmt.Sprintf("%s=%v", "analysis_query.scope", url.QueryEscape(req.GetAnalysisQuery().GetScope())))
 	ctx = insertMetadata(ctx, c.xGoogMetadata, md)
-	opts = append(c.CallOptions.AnalyzeIamPolicy[0:len(c.CallOptions.AnalyzeIamPolicy):len(c.CallOptions.AnalyzeIamPolicy)], opts...)
+	opts = append((*c.CallOptions).AnalyzeIamPolicy[0:len((*c.CallOptions).AnalyzeIamPolicy):len((*c.CallOptions).AnalyzeIamPolicy)], opts...)
 	var resp *assetpb.AnalyzeIamPolicyResponse
 	err := gax.Invoke(ctx, func(ctx context.Context, settings gax.CallSettings) error {
 		var err error
@@ -478,31 +717,96 @@ func (c *Client) AnalyzeIamPolicy(ctx context.Context, req *assetpb.AnalyzeIamPo
 	return resp, nil
 }
 
-// ExportIamPolicyAnalysis exports the answers of which identities have what accesses on which
-// resources to a Google Cloud Storage or a BigQuery destination. For Cloud
-// Storage destination, the output format is the JSON format that represents a
-// google.cloud.asset.v1.AnalyzeIamPolicyResponse.
-// This method implements the
-// google.longrunning.Operation, which allows
-// you to track the export status. We recommend intervals of at least 2
-// seconds with exponential retry to poll the export operation result. The
-// metadata contains the request to help callers to map responses to requests.
-func (c *Client) ExportIamPolicyAnalysis(ctx context.Context, req *assetpb.ExportIamPolicyAnalysisRequest, opts ...gax.CallOption) (*ExportIamPolicyAnalysisOperation, error) {
+func (c *gRPCClient) AnalyzeIamPolicyLongrunning(ctx context.Context, req *assetpb.AnalyzeIamPolicyLongrunningRequest, opts ...gax.CallOption) (*AnalyzeIamPolicyLongrunningOperation, error) {
+	if _, ok := ctx.Deadline(); !ok && !c.disableDeadlines {
+		cctx, cancel := context.WithTimeout(ctx, 60000*time.Millisecond)
+		defer cancel()
+		ctx = cctx
+	}
 	md := metadata.Pairs("x-goog-request-params", fmt.Sprintf("%s=%v", "analysis_query.scope", url.QueryEscape(req.GetAnalysisQuery().GetScope())))
 	ctx = insertMetadata(ctx, c.xGoogMetadata, md)
-	opts = append(c.CallOptions.ExportIamPolicyAnalysis[0:len(c.CallOptions.ExportIamPolicyAnalysis):len(c.CallOptions.ExportIamPolicyAnalysis)], opts...)
+	opts = append((*c.CallOptions).AnalyzeIamPolicyLongrunning[0:len((*c.CallOptions).AnalyzeIamPolicyLongrunning):len((*c.CallOptions).AnalyzeIamPolicyLongrunning)], opts...)
 	var resp *longrunningpb.Operation
 	err := gax.Invoke(ctx, func(ctx context.Context, settings gax.CallSettings) error {
 		var err error
-		resp, err = c.client.ExportIamPolicyAnalysis(ctx, req, settings.GRPC...)
+		resp, err = c.client.AnalyzeIamPolicyLongrunning(ctx, req, settings.GRPC...)
 		return err
 	}, opts...)
 	if err != nil {
 		return nil, err
 	}
-	return &ExportIamPolicyAnalysisOperation{
-		lro: longrunning.InternalNewOperation(c.LROClient, resp),
+	return &AnalyzeIamPolicyLongrunningOperation{
+		lro: longrunning.InternalNewOperation(*c.LROClient, resp),
 	}, nil
+}
+
+// AnalyzeIamPolicyLongrunningOperation manages a long-running operation from AnalyzeIamPolicyLongrunning.
+type AnalyzeIamPolicyLongrunningOperation struct {
+	lro *longrunning.Operation
+}
+
+// AnalyzeIamPolicyLongrunningOperation returns a new AnalyzeIamPolicyLongrunningOperation from a given name.
+// The name must be that of a previously created AnalyzeIamPolicyLongrunningOperation, possibly from a different process.
+func (c *gRPCClient) AnalyzeIamPolicyLongrunningOperation(name string) *AnalyzeIamPolicyLongrunningOperation {
+	return &AnalyzeIamPolicyLongrunningOperation{
+		lro: longrunning.InternalNewOperation(*c.LROClient, &longrunningpb.Operation{Name: name}),
+	}
+}
+
+// Wait blocks until the long-running operation is completed, returning the response and any errors encountered.
+//
+// See documentation of Poll for error-handling information.
+func (op *AnalyzeIamPolicyLongrunningOperation) Wait(ctx context.Context, opts ...gax.CallOption) (*assetpb.AnalyzeIamPolicyLongrunningResponse, error) {
+	var resp assetpb.AnalyzeIamPolicyLongrunningResponse
+	if err := op.lro.WaitWithInterval(ctx, &resp, time.Minute, opts...); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// Poll fetches the latest state of the long-running operation.
+//
+// Poll also fetches the latest metadata, which can be retrieved by Metadata.
+//
+// If Poll fails, the error is returned and op is unmodified. If Poll succeeds and
+// the operation has completed with failure, the error is returned and op.Done will return true.
+// If Poll succeeds and the operation has completed successfully,
+// op.Done will return true, and the response of the operation is returned.
+// If Poll succeeds and the operation has not completed, the returned response and error are both nil.
+func (op *AnalyzeIamPolicyLongrunningOperation) Poll(ctx context.Context, opts ...gax.CallOption) (*assetpb.AnalyzeIamPolicyLongrunningResponse, error) {
+	var resp assetpb.AnalyzeIamPolicyLongrunningResponse
+	if err := op.lro.Poll(ctx, &resp, opts...); err != nil {
+		return nil, err
+	}
+	if !op.Done() {
+		return nil, nil
+	}
+	return &resp, nil
+}
+
+// Metadata returns metadata associated with the long-running operation.
+// Metadata itself does not contact the server, but Poll does.
+// To get the latest metadata, call this method after a successful call to Poll.
+// If the metadata is not available, the returned metadata and error are both nil.
+func (op *AnalyzeIamPolicyLongrunningOperation) Metadata() (*assetpb.AnalyzeIamPolicyLongrunningRequest, error) {
+	var meta assetpb.AnalyzeIamPolicyLongrunningRequest
+	if err := op.lro.Metadata(&meta); err == longrunning.ErrNoMetadata {
+		return nil, nil
+	} else if err != nil {
+		return nil, err
+	}
+	return &meta, nil
+}
+
+// Done reports whether the long-running operation has completed.
+func (op *AnalyzeIamPolicyLongrunningOperation) Done() bool {
+	return op.lro.Done()
+}
+
+// Name returns the name of the long-running operation.
+// The name is assigned by the server and is unique within the service from which the operation is created.
+func (op *AnalyzeIamPolicyLongrunningOperation) Name() string {
+	return op.lro.Name()
 }
 
 // ExportAssetsOperation manages a long-running operation from ExportAssets.
@@ -512,9 +816,9 @@ type ExportAssetsOperation struct {
 
 // ExportAssetsOperation returns a new ExportAssetsOperation from a given name.
 // The name must be that of a previously created ExportAssetsOperation, possibly from a different process.
-func (c *Client) ExportAssetsOperation(name string) *ExportAssetsOperation {
+func (c *gRPCClient) ExportAssetsOperation(name string) *ExportAssetsOperation {
 	return &ExportAssetsOperation{
-		lro: longrunning.InternalNewOperation(c.LROClient, &longrunningpb.Operation{Name: name}),
+		lro: longrunning.InternalNewOperation(*c.LROClient, &longrunningpb.Operation{Name: name}),
 	}
 }
 
@@ -574,73 +878,51 @@ func (op *ExportAssetsOperation) Name() string {
 	return op.lro.Name()
 }
 
-// ExportIamPolicyAnalysisOperation manages a long-running operation from ExportIamPolicyAnalysis.
-type ExportIamPolicyAnalysisOperation struct {
-	lro *longrunning.Operation
+// AssetIterator manages a stream of *assetpb.Asset.
+type AssetIterator struct {
+	items    []*assetpb.Asset
+	pageInfo *iterator.PageInfo
+	nextFunc func() error
+
+	// Response is the raw response for the current page.
+	// It must be cast to the RPC response type.
+	// Calling Next() or InternalFetch() updates this value.
+	Response interface{}
+
+	// InternalFetch is for use by the Google Cloud Libraries only.
+	// It is not part of the stable interface of this package.
+	//
+	// InternalFetch returns results from a single call to the underlying RPC.
+	// The number of results is no greater than pageSize.
+	// If there are no more results, nextPageToken is empty and err is nil.
+	InternalFetch func(pageSize int, pageToken string) (results []*assetpb.Asset, nextPageToken string, err error)
 }
 
-// ExportIamPolicyAnalysisOperation returns a new ExportIamPolicyAnalysisOperation from a given name.
-// The name must be that of a previously created ExportIamPolicyAnalysisOperation, possibly from a different process.
-func (c *Client) ExportIamPolicyAnalysisOperation(name string) *ExportIamPolicyAnalysisOperation {
-	return &ExportIamPolicyAnalysisOperation{
-		lro: longrunning.InternalNewOperation(c.LROClient, &longrunningpb.Operation{Name: name}),
+// PageInfo supports pagination. See the google.golang.org/api/iterator package for details.
+func (it *AssetIterator) PageInfo() *iterator.PageInfo {
+	return it.pageInfo
+}
+
+// Next returns the next result. Its second return value is iterator.Done if there are no more
+// results. Once Next returns Done, all subsequent calls will return Done.
+func (it *AssetIterator) Next() (*assetpb.Asset, error) {
+	var item *assetpb.Asset
+	if err := it.nextFunc(); err != nil {
+		return item, err
 	}
+	item = it.items[0]
+	it.items = it.items[1:]
+	return item, nil
 }
 
-// Wait blocks until the long-running operation is completed, returning the response and any errors encountered.
-//
-// See documentation of Poll for error-handling information.
-func (op *ExportIamPolicyAnalysisOperation) Wait(ctx context.Context, opts ...gax.CallOption) (*assetpb.ExportIamPolicyAnalysisResponse, error) {
-	var resp assetpb.ExportIamPolicyAnalysisResponse
-	if err := op.lro.WaitWithInterval(ctx, &resp, time.Minute, opts...); err != nil {
-		return nil, err
-	}
-	return &resp, nil
+func (it *AssetIterator) bufLen() int {
+	return len(it.items)
 }
 
-// Poll fetches the latest state of the long-running operation.
-//
-// Poll also fetches the latest metadata, which can be retrieved by Metadata.
-//
-// If Poll fails, the error is returned and op is unmodified. If Poll succeeds and
-// the operation has completed with failure, the error is returned and op.Done will return true.
-// If Poll succeeds and the operation has completed successfully,
-// op.Done will return true, and the response of the operation is returned.
-// If Poll succeeds and the operation has not completed, the returned response and error are both nil.
-func (op *ExportIamPolicyAnalysisOperation) Poll(ctx context.Context, opts ...gax.CallOption) (*assetpb.ExportIamPolicyAnalysisResponse, error) {
-	var resp assetpb.ExportIamPolicyAnalysisResponse
-	if err := op.lro.Poll(ctx, &resp, opts...); err != nil {
-		return nil, err
-	}
-	if !op.Done() {
-		return nil, nil
-	}
-	return &resp, nil
-}
-
-// Metadata returns metadata associated with the long-running operation.
-// Metadata itself does not contact the server, but Poll does.
-// To get the latest metadata, call this method after a successful call to Poll.
-// If the metadata is not available, the returned metadata and error are both nil.
-func (op *ExportIamPolicyAnalysisOperation) Metadata() (*assetpb.ExportIamPolicyAnalysisRequest, error) {
-	var meta assetpb.ExportIamPolicyAnalysisRequest
-	if err := op.lro.Metadata(&meta); err == longrunning.ErrNoMetadata {
-		return nil, nil
-	} else if err != nil {
-		return nil, err
-	}
-	return &meta, nil
-}
-
-// Done reports whether the long-running operation has completed.
-func (op *ExportIamPolicyAnalysisOperation) Done() bool {
-	return op.lro.Done()
-}
-
-// Name returns the name of the long-running operation.
-// The name is assigned by the server and is unique within the service from which the operation is created.
-func (op *ExportIamPolicyAnalysisOperation) Name() string {
-	return op.lro.Name()
+func (it *AssetIterator) takeBuf() interface{} {
+	b := it.items
+	it.items = nil
+	return b
 }
 
 // IamPolicySearchResultIterator manages a stream of *assetpb.IamPolicySearchResult.

@@ -63,6 +63,11 @@ func (c *Client) JobFromIDLocation(ctx context.Context, id, location string) (j 
 	return bqToJob(bqjob, c)
 }
 
+// ProjectID returns the job's associated project.
+func (j *Job) ProjectID() string {
+	return j.projectID
+}
+
 // ID returns the job's ID.
 func (j *Job) ID() string {
 	return j.jobID
@@ -233,6 +238,23 @@ func (j *Job) Cancel(ctx context.Context) error {
 	})
 }
 
+// Delete deletes the job.
+func (j *Job) Delete(ctx context.Context) (err error) {
+	ctx = trace.StartSpan(ctx, "cloud.google.com/go/bigquery.Job.Delete")
+	defer func() { trace.EndSpan(ctx, err) }()
+
+	call := j.c.bqs.Jobs.Delete(j.projectID, j.jobID).Context(ctx)
+	if j.location != "" {
+		call = call.Location(j.location)
+	}
+	setClientHeader(call.Header())
+
+	return runWithRetry(ctx, func() (err error) {
+		err = call.Do()
+		return err
+	})
+}
+
 // Wait blocks until the job or the context is done. It returns the final status
 // of the job.
 // If an error occurs while retrieving the status, Wait returns that error. But
@@ -347,6 +369,9 @@ type JobStatistics struct {
 	// ScriptStatistics includes information run as part of a child job within
 	// a script.
 	ScriptStatistics *ScriptStatistics
+
+	// ReservationUsage attributes slot consumption to reservations.
+	ReservationUsage []*ReservationUsage
 }
 
 // Statistics is one of ExtractStatistics, LoadStatistics or QueryStatistics.
@@ -410,6 +435,10 @@ type QueryStatistics struct {
 	// The number of rows affected by a DML statement. Present only for DML
 	// statements INSERT, UPDATE or DELETE.
 	NumDMLAffectedRows int64
+
+	// DMLStats provides statistics about the row mutations performed by
+	// DML statements.
+	DMLStats *DMLStatistics
 
 	// Describes a timeline of job execution.
 	Timeline []*QueryTimelineSample
@@ -561,6 +590,25 @@ type QueryTimelineSample struct {
 	SlotMillis int64
 }
 
+// ReservationUsage contains information about a job's usage of a single reservation.
+type ReservationUsage struct {
+	// SlotMillis reports the slot milliseconds utilized within in the given reservation.
+	SlotMillis int64
+	// Name indicates the utilized reservation name, or "unreserved" for ondemand usage.
+	Name string
+}
+
+func bqToReservationUsage(ru []*bq.JobStatisticsReservationUsage) []*ReservationUsage {
+	var usage []*ReservationUsage
+	for _, in := range ru {
+		usage = append(usage, &ReservationUsage{
+			SlotMillis: in.SlotMs,
+			Name:       in.Name,
+		})
+	}
+	return usage
+}
+
 // ScriptStatistics report information about script-based query jobs.
 type ScriptStatistics struct {
 	EvaluationKind string
@@ -618,6 +666,27 @@ func bqToScriptStackFrame(bsf *bq.ScriptStackFrame) *ScriptStackFrame {
 		EndColumn:   bsf.EndColumn,
 		ProcedureID: bsf.ProcedureId,
 		Text:        bsf.Text,
+	}
+}
+
+// DMLStatistics contains counts of row mutations triggered by a DML query statement.
+type DMLStatistics struct {
+	// Rows added by the statement.
+	InsertedRowCount int64
+	// Rows removed by the statement.
+	DeletedRowCount int64
+	// Rows changed by the statement.
+	UpdatedRowCount int64
+}
+
+func bqToDMLStatistics(q *bq.DmlStatistics) *DMLStatistics {
+	if q == nil {
+		return nil
+	}
+	return &DMLStatistics{
+		InsertedRowCount: q.InsertedRowCount,
+		DeletedRowCount:  q.DeletedRowCount,
+		UpdatedRowCount:  q.UpdatedRowCount,
 	}
 }
 
@@ -810,6 +879,7 @@ func (j *Job) setStatistics(s *bq.JobStatistics, c *Client) {
 		NumChildJobs:        s.NumChildJobs,
 		ParentJobID:         s.ParentJobId,
 		ScriptStatistics:    bqToScriptStatistics(s.ScriptStatistics),
+		ReservationUsage:    bqToReservationUsage(s.ReservationUsage),
 	}
 	switch {
 	case s.Extract != nil:
@@ -843,6 +913,7 @@ func (j *Job) setStatistics(s *bq.JobStatistics, c *Client) {
 			TotalBytesProcessed:           s.Query.TotalBytesProcessed,
 			TotalBytesProcessedAccuracy:   s.Query.TotalBytesProcessedAccuracy,
 			NumDMLAffectedRows:            s.Query.NumDmlAffectedRows,
+			DMLStats:                      bqToDMLStatistics(s.Query.DmlStats),
 			QueryPlan:                     queryPlanFromProto(s.Query.QueryPlan),
 			Schema:                        bqToSchema(s.Query.Schema),
 			SlotMillis:                    s.Query.TotalSlotMs,

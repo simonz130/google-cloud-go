@@ -1,4 +1,4 @@
-// Copyright 2020 Google LLC
+// Copyright 2021 Google LLC
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -23,15 +23,16 @@ import (
 	"net/url"
 	"time"
 
-	"github.com/golang/protobuf/proto"
 	gax "github.com/googleapis/gax-go/v2"
 	"google.golang.org/api/iterator"
 	"google.golang.org/api/option"
+	"google.golang.org/api/option/internaloption"
 	gtransport "google.golang.org/api/transport/grpc"
 	dialogflowpb "google.golang.org/genproto/googleapis/cloud/dialogflow/v2"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/protobuf/proto"
 )
 
 var newSessionEntityTypesClientHook clientHook
@@ -45,11 +46,14 @@ type SessionEntityTypesCallOptions struct {
 	DeleteSessionEntityType []gax.CallOption
 }
 
-func defaultSessionEntityTypesClientOptions() []option.ClientOption {
+func defaultSessionEntityTypesGRPCClientOptions() []option.ClientOption {
 	return []option.ClientOption{
-		option.WithEndpoint("dialogflow.googleapis.com:443"),
+		internaloption.WithDefaultEndpoint("dialogflow.googleapis.com:443"),
+		internaloption.WithDefaultMTLSEndpoint("dialogflow.mtls.googleapis.com:443"),
+		internaloption.WithDefaultAudience("https://dialogflow.googleapis.com/"),
+		internaloption.WithDefaultScopes(DefaultAuthScopes()...),
+		internaloption.EnableJwtWithScope(),
 		option.WithGRPCDialOption(grpc.WithDisableServiceConfig()),
-		option.WithScopes(DefaultAuthScopes()...),
 		option.WithGRPCDialOption(grpc.WithDefaultCallOptions(
 			grpc.MaxCallRecvMsgSize(math.MaxInt32))),
 	}
@@ -115,72 +119,50 @@ func defaultSessionEntityTypesCallOptions() *SessionEntityTypesCallOptions {
 	}
 }
 
-// SessionEntityTypesClient is a client for interacting with Dialogflow API.
-//
-// Methods, except Close, may be called concurrently. However, fields must not be modified concurrently with method calls.
-type SessionEntityTypesClient struct {
-	// Connection pool of gRPC connections to the service.
-	connPool gtransport.ConnPool
+// internalSessionEntityTypesClient is an interface that defines the methods availaible from Dialogflow API.
+type internalSessionEntityTypesClient interface {
+	Close() error
+	setGoogleClientInfo(...string)
+	Connection() *grpc.ClientConn
+	ListSessionEntityTypes(context.Context, *dialogflowpb.ListSessionEntityTypesRequest, ...gax.CallOption) *SessionEntityTypeIterator
+	GetSessionEntityType(context.Context, *dialogflowpb.GetSessionEntityTypeRequest, ...gax.CallOption) (*dialogflowpb.SessionEntityType, error)
+	CreateSessionEntityType(context.Context, *dialogflowpb.CreateSessionEntityTypeRequest, ...gax.CallOption) (*dialogflowpb.SessionEntityType, error)
+	UpdateSessionEntityType(context.Context, *dialogflowpb.UpdateSessionEntityTypeRequest, ...gax.CallOption) (*dialogflowpb.SessionEntityType, error)
+	DeleteSessionEntityType(context.Context, *dialogflowpb.DeleteSessionEntityTypeRequest, ...gax.CallOption) error
+}
 
-	// The gRPC API client.
-	sessionEntityTypesClient dialogflowpb.SessionEntityTypesClient
+// SessionEntityTypesClient is a client for interacting with Dialogflow API.
+// Methods, except Close, may be called concurrently. However, fields must not be modified concurrently with method calls.
+//
+// Service for managing SessionEntityTypes.
+type SessionEntityTypesClient struct {
+	// The internal transport-dependent client.
+	internalClient internalSessionEntityTypesClient
 
 	// The call options for this service.
 	CallOptions *SessionEntityTypesCallOptions
-
-	// The x-goog-* metadata to be sent with each request.
-	xGoogMetadata metadata.MD
 }
 
-// NewSessionEntityTypesClient creates a new session entity types client.
-//
-// Service for managing SessionEntityTypes.
-func NewSessionEntityTypesClient(ctx context.Context, opts ...option.ClientOption) (*SessionEntityTypesClient, error) {
-	clientOpts := defaultSessionEntityTypesClientOptions()
-
-	if newSessionEntityTypesClientHook != nil {
-		hookOpts, err := newSessionEntityTypesClientHook(ctx, clientHookParams{})
-		if err != nil {
-			return nil, err
-		}
-		clientOpts = append(clientOpts, hookOpts...)
-	}
-
-	connPool, err := gtransport.DialPool(ctx, append(clientOpts, opts...)...)
-	if err != nil {
-		return nil, err
-	}
-	c := &SessionEntityTypesClient{
-		connPool:    connPool,
-		CallOptions: defaultSessionEntityTypesCallOptions(),
-
-		sessionEntityTypesClient: dialogflowpb.NewSessionEntityTypesClient(connPool),
-	}
-	c.setGoogleClientInfo()
-
-	return c, nil
-}
-
-// Connection returns a connection to the API service.
-//
-// Deprecated.
-func (c *SessionEntityTypesClient) Connection() *grpc.ClientConn {
-	return c.connPool.Conn()
-}
+// Wrapper methods routed to the internal client.
 
 // Close closes the connection to the API service. The user should invoke this when
 // the client is no longer required.
 func (c *SessionEntityTypesClient) Close() error {
-	return c.connPool.Close()
+	return c.internalClient.Close()
 }
 
 // setGoogleClientInfo sets the name and version of the application in
 // the `x-goog-api-client` header passed on each request. Intended for
 // use by Google-written clients.
 func (c *SessionEntityTypesClient) setGoogleClientInfo(keyval ...string) {
-	kv := append([]string{"gl-go", versionGo()}, keyval...)
-	kv = append(kv, "gapic", versionClient, "gax", gax.Version, "grpc", grpc.Version)
-	c.xGoogMetadata = metadata.Pairs("x-goog-api-client", gax.XGoogHeader(kv...))
+	c.internalClient.setGoogleClientInfo(keyval...)
+}
+
+// Connection returns a connection to the API service.
+//
+// Deprecated.
+func (c *SessionEntityTypesClient) Connection() *grpc.ClientConn {
+	return c.internalClient.Connection()
 }
 
 // ListSessionEntityTypes returns the list of all session entity types in the specified session.
@@ -189,9 +171,132 @@ func (c *SessionEntityTypesClient) setGoogleClientInfo(keyval ...string) {
 // Contact Dialogflow support if you need to use session entities
 // with Google Assistant integration.
 func (c *SessionEntityTypesClient) ListSessionEntityTypes(ctx context.Context, req *dialogflowpb.ListSessionEntityTypesRequest, opts ...gax.CallOption) *SessionEntityTypeIterator {
+	return c.internalClient.ListSessionEntityTypes(ctx, req, opts...)
+}
+
+// GetSessionEntityType retrieves the specified session entity type.
+//
+// This method doesn’t work with Google Assistant integration.
+// Contact Dialogflow support if you need to use session entities
+// with Google Assistant integration.
+func (c *SessionEntityTypesClient) GetSessionEntityType(ctx context.Context, req *dialogflowpb.GetSessionEntityTypeRequest, opts ...gax.CallOption) (*dialogflowpb.SessionEntityType, error) {
+	return c.internalClient.GetSessionEntityType(ctx, req, opts...)
+}
+
+// CreateSessionEntityType creates a session entity type.
+//
+// If the specified session entity type already exists, overrides the session
+// entity type.
+//
+// This method doesn’t work with Google Assistant integration.
+// Contact Dialogflow support if you need to use session entities
+// with Google Assistant integration.
+func (c *SessionEntityTypesClient) CreateSessionEntityType(ctx context.Context, req *dialogflowpb.CreateSessionEntityTypeRequest, opts ...gax.CallOption) (*dialogflowpb.SessionEntityType, error) {
+	return c.internalClient.CreateSessionEntityType(ctx, req, opts...)
+}
+
+// UpdateSessionEntityType updates the specified session entity type.
+//
+// This method doesn’t work with Google Assistant integration.
+// Contact Dialogflow support if you need to use session entities
+// with Google Assistant integration.
+func (c *SessionEntityTypesClient) UpdateSessionEntityType(ctx context.Context, req *dialogflowpb.UpdateSessionEntityTypeRequest, opts ...gax.CallOption) (*dialogflowpb.SessionEntityType, error) {
+	return c.internalClient.UpdateSessionEntityType(ctx, req, opts...)
+}
+
+// DeleteSessionEntityType deletes the specified session entity type.
+//
+// This method doesn’t work with Google Assistant integration.
+// Contact Dialogflow support if you need to use session entities
+// with Google Assistant integration.
+func (c *SessionEntityTypesClient) DeleteSessionEntityType(ctx context.Context, req *dialogflowpb.DeleteSessionEntityTypeRequest, opts ...gax.CallOption) error {
+	return c.internalClient.DeleteSessionEntityType(ctx, req, opts...)
+}
+
+// sessionEntityTypesGRPCClient is a client for interacting with Dialogflow API over gRPC transport.
+//
+// Methods, except Close, may be called concurrently. However, fields must not be modified concurrently with method calls.
+type sessionEntityTypesGRPCClient struct {
+	// Connection pool of gRPC connections to the service.
+	connPool gtransport.ConnPool
+
+	// flag to opt out of default deadlines via GOOGLE_API_GO_EXPERIMENTAL_DISABLE_DEFAULT_DEADLINE
+	disableDeadlines bool
+
+	// Points back to the CallOptions field of the containing SessionEntityTypesClient
+	CallOptions **SessionEntityTypesCallOptions
+
+	// The gRPC API client.
+	sessionEntityTypesClient dialogflowpb.SessionEntityTypesClient
+
+	// The x-goog-* metadata to be sent with each request.
+	xGoogMetadata metadata.MD
+}
+
+// NewSessionEntityTypesClient creates a new session entity types client based on gRPC.
+// The returned client must be Closed when it is done being used to clean up its underlying connections.
+//
+// Service for managing SessionEntityTypes.
+func NewSessionEntityTypesClient(ctx context.Context, opts ...option.ClientOption) (*SessionEntityTypesClient, error) {
+	clientOpts := defaultSessionEntityTypesGRPCClientOptions()
+	if newSessionEntityTypesClientHook != nil {
+		hookOpts, err := newSessionEntityTypesClientHook(ctx, clientHookParams{})
+		if err != nil {
+			return nil, err
+		}
+		clientOpts = append(clientOpts, hookOpts...)
+	}
+
+	disableDeadlines, err := checkDisableDeadlines()
+	if err != nil {
+		return nil, err
+	}
+
+	connPool, err := gtransport.DialPool(ctx, append(clientOpts, opts...)...)
+	if err != nil {
+		return nil, err
+	}
+	client := SessionEntityTypesClient{CallOptions: defaultSessionEntityTypesCallOptions()}
+
+	c := &sessionEntityTypesGRPCClient{
+		connPool:                 connPool,
+		disableDeadlines:         disableDeadlines,
+		sessionEntityTypesClient: dialogflowpb.NewSessionEntityTypesClient(connPool),
+		CallOptions:              &client.CallOptions,
+	}
+	c.setGoogleClientInfo()
+
+	client.internalClient = c
+
+	return &client, nil
+}
+
+// Connection returns a connection to the API service.
+//
+// Deprecated.
+func (c *sessionEntityTypesGRPCClient) Connection() *grpc.ClientConn {
+	return c.connPool.Conn()
+}
+
+// setGoogleClientInfo sets the name and version of the application in
+// the `x-goog-api-client` header passed on each request. Intended for
+// use by Google-written clients.
+func (c *sessionEntityTypesGRPCClient) setGoogleClientInfo(keyval ...string) {
+	kv := append([]string{"gl-go", versionGo()}, keyval...)
+	kv = append(kv, "gapic", versionClient, "gax", gax.Version, "grpc", grpc.Version)
+	c.xGoogMetadata = metadata.Pairs("x-goog-api-client", gax.XGoogHeader(kv...))
+}
+
+// Close closes the connection to the API service. The user should invoke this when
+// the client is no longer required.
+func (c *sessionEntityTypesGRPCClient) Close() error {
+	return c.connPool.Close()
+}
+
+func (c *sessionEntityTypesGRPCClient) ListSessionEntityTypes(ctx context.Context, req *dialogflowpb.ListSessionEntityTypesRequest, opts ...gax.CallOption) *SessionEntityTypeIterator {
 	md := metadata.Pairs("x-goog-request-params", fmt.Sprintf("%s=%v", "parent", url.QueryEscape(req.GetParent())))
 	ctx = insertMetadata(ctx, c.xGoogMetadata, md)
-	opts = append(c.CallOptions.ListSessionEntityTypes[0:len(c.CallOptions.ListSessionEntityTypes):len(c.CallOptions.ListSessionEntityTypes)], opts...)
+	opts = append((*c.CallOptions).ListSessionEntityTypes[0:len((*c.CallOptions).ListSessionEntityTypes):len((*c.CallOptions).ListSessionEntityTypes)], opts...)
 	it := &SessionEntityTypeIterator{}
 	req = proto.Clone(req).(*dialogflowpb.ListSessionEntityTypesRequest)
 	it.InternalFetch = func(pageSize int, pageToken string) ([]*dialogflowpb.SessionEntityType, string, error) {
@@ -228,15 +333,15 @@ func (c *SessionEntityTypesClient) ListSessionEntityTypes(ctx context.Context, r
 	return it
 }
 
-// GetSessionEntityType retrieves the specified session entity type.
-//
-// This method doesn’t work with Google Assistant integration.
-// Contact Dialogflow support if you need to use session entities
-// with Google Assistant integration.
-func (c *SessionEntityTypesClient) GetSessionEntityType(ctx context.Context, req *dialogflowpb.GetSessionEntityTypeRequest, opts ...gax.CallOption) (*dialogflowpb.SessionEntityType, error) {
+func (c *sessionEntityTypesGRPCClient) GetSessionEntityType(ctx context.Context, req *dialogflowpb.GetSessionEntityTypeRequest, opts ...gax.CallOption) (*dialogflowpb.SessionEntityType, error) {
+	if _, ok := ctx.Deadline(); !ok && !c.disableDeadlines {
+		cctx, cancel := context.WithTimeout(ctx, 60000*time.Millisecond)
+		defer cancel()
+		ctx = cctx
+	}
 	md := metadata.Pairs("x-goog-request-params", fmt.Sprintf("%s=%v", "name", url.QueryEscape(req.GetName())))
 	ctx = insertMetadata(ctx, c.xGoogMetadata, md)
-	opts = append(c.CallOptions.GetSessionEntityType[0:len(c.CallOptions.GetSessionEntityType):len(c.CallOptions.GetSessionEntityType)], opts...)
+	opts = append((*c.CallOptions).GetSessionEntityType[0:len((*c.CallOptions).GetSessionEntityType):len((*c.CallOptions).GetSessionEntityType)], opts...)
 	var resp *dialogflowpb.SessionEntityType
 	err := gax.Invoke(ctx, func(ctx context.Context, settings gax.CallSettings) error {
 		var err error
@@ -249,18 +354,15 @@ func (c *SessionEntityTypesClient) GetSessionEntityType(ctx context.Context, req
 	return resp, nil
 }
 
-// CreateSessionEntityType creates a session entity type.
-//
-// If the specified session entity type already exists, overrides the session
-// entity type.
-//
-// This method doesn’t work with Google Assistant integration.
-// Contact Dialogflow support if you need to use session entities
-// with Google Assistant integration.
-func (c *SessionEntityTypesClient) CreateSessionEntityType(ctx context.Context, req *dialogflowpb.CreateSessionEntityTypeRequest, opts ...gax.CallOption) (*dialogflowpb.SessionEntityType, error) {
+func (c *sessionEntityTypesGRPCClient) CreateSessionEntityType(ctx context.Context, req *dialogflowpb.CreateSessionEntityTypeRequest, opts ...gax.CallOption) (*dialogflowpb.SessionEntityType, error) {
+	if _, ok := ctx.Deadline(); !ok && !c.disableDeadlines {
+		cctx, cancel := context.WithTimeout(ctx, 60000*time.Millisecond)
+		defer cancel()
+		ctx = cctx
+	}
 	md := metadata.Pairs("x-goog-request-params", fmt.Sprintf("%s=%v", "parent", url.QueryEscape(req.GetParent())))
 	ctx = insertMetadata(ctx, c.xGoogMetadata, md)
-	opts = append(c.CallOptions.CreateSessionEntityType[0:len(c.CallOptions.CreateSessionEntityType):len(c.CallOptions.CreateSessionEntityType)], opts...)
+	opts = append((*c.CallOptions).CreateSessionEntityType[0:len((*c.CallOptions).CreateSessionEntityType):len((*c.CallOptions).CreateSessionEntityType)], opts...)
 	var resp *dialogflowpb.SessionEntityType
 	err := gax.Invoke(ctx, func(ctx context.Context, settings gax.CallSettings) error {
 		var err error
@@ -273,15 +375,15 @@ func (c *SessionEntityTypesClient) CreateSessionEntityType(ctx context.Context, 
 	return resp, nil
 }
 
-// UpdateSessionEntityType updates the specified session entity type.
-//
-// This method doesn’t work with Google Assistant integration.
-// Contact Dialogflow support if you need to use session entities
-// with Google Assistant integration.
-func (c *SessionEntityTypesClient) UpdateSessionEntityType(ctx context.Context, req *dialogflowpb.UpdateSessionEntityTypeRequest, opts ...gax.CallOption) (*dialogflowpb.SessionEntityType, error) {
+func (c *sessionEntityTypesGRPCClient) UpdateSessionEntityType(ctx context.Context, req *dialogflowpb.UpdateSessionEntityTypeRequest, opts ...gax.CallOption) (*dialogflowpb.SessionEntityType, error) {
+	if _, ok := ctx.Deadline(); !ok && !c.disableDeadlines {
+		cctx, cancel := context.WithTimeout(ctx, 60000*time.Millisecond)
+		defer cancel()
+		ctx = cctx
+	}
 	md := metadata.Pairs("x-goog-request-params", fmt.Sprintf("%s=%v", "session_entity_type.name", url.QueryEscape(req.GetSessionEntityType().GetName())))
 	ctx = insertMetadata(ctx, c.xGoogMetadata, md)
-	opts = append(c.CallOptions.UpdateSessionEntityType[0:len(c.CallOptions.UpdateSessionEntityType):len(c.CallOptions.UpdateSessionEntityType)], opts...)
+	opts = append((*c.CallOptions).UpdateSessionEntityType[0:len((*c.CallOptions).UpdateSessionEntityType):len((*c.CallOptions).UpdateSessionEntityType)], opts...)
 	var resp *dialogflowpb.SessionEntityType
 	err := gax.Invoke(ctx, func(ctx context.Context, settings gax.CallSettings) error {
 		var err error
@@ -294,15 +396,15 @@ func (c *SessionEntityTypesClient) UpdateSessionEntityType(ctx context.Context, 
 	return resp, nil
 }
 
-// DeleteSessionEntityType deletes the specified session entity type.
-//
-// This method doesn’t work with Google Assistant integration.
-// Contact Dialogflow support if you need to use session entities
-// with Google Assistant integration.
-func (c *SessionEntityTypesClient) DeleteSessionEntityType(ctx context.Context, req *dialogflowpb.DeleteSessionEntityTypeRequest, opts ...gax.CallOption) error {
+func (c *sessionEntityTypesGRPCClient) DeleteSessionEntityType(ctx context.Context, req *dialogflowpb.DeleteSessionEntityTypeRequest, opts ...gax.CallOption) error {
+	if _, ok := ctx.Deadline(); !ok && !c.disableDeadlines {
+		cctx, cancel := context.WithTimeout(ctx, 60000*time.Millisecond)
+		defer cancel()
+		ctx = cctx
+	}
 	md := metadata.Pairs("x-goog-request-params", fmt.Sprintf("%s=%v", "name", url.QueryEscape(req.GetName())))
 	ctx = insertMetadata(ctx, c.xGoogMetadata, md)
-	opts = append(c.CallOptions.DeleteSessionEntityType[0:len(c.CallOptions.DeleteSessionEntityType):len(c.CallOptions.DeleteSessionEntityType)], opts...)
+	opts = append((*c.CallOptions).DeleteSessionEntityType[0:len((*c.CallOptions).DeleteSessionEntityType):len((*c.CallOptions).DeleteSessionEntityType)], opts...)
 	err := gax.Invoke(ctx, func(ctx context.Context, settings gax.CallSettings) error {
 		var err error
 		_, err = c.sessionEntityTypesClient.DeleteSessionEntityType(ctx, req, settings.GRPC...)

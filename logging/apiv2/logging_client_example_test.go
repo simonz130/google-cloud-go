@@ -1,4 +1,4 @@
-// Copyright 2020 Google LLC
+// Copyright 2021 Google LLC
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -18,6 +18,7 @@ package logging_test
 
 import (
 	"context"
+	"io"
 
 	logging "cloud.google.com/go/logging/apiv2"
 	"google.golang.org/api/iterator"
@@ -30,6 +31,8 @@ func ExampleNewClient() {
 	if err != nil {
 		// TODO: Handle error.
 	}
+	defer c.Close()
+
 	// TODO: Use client.
 	_ = c
 }
@@ -40,6 +43,7 @@ func ExampleClient_DeleteLog() {
 	if err != nil {
 		// TODO: Handle error.
 	}
+	defer c.Close()
 
 	req := &loggingpb.DeleteLogRequest{
 		// TODO: Fill request struct fields.
@@ -51,13 +55,12 @@ func ExampleClient_DeleteLog() {
 }
 
 func ExampleClient_WriteLogEntries() {
-	// import loggingpb "google.golang.org/genproto/googleapis/logging/v2"
-
 	ctx := context.Background()
 	c, err := logging.NewClient(ctx)
 	if err != nil {
 		// TODO: Handle error.
 	}
+	defer c.Close()
 
 	req := &loggingpb.WriteLogEntriesRequest{
 		// TODO: Fill request struct fields.
@@ -71,14 +74,12 @@ func ExampleClient_WriteLogEntries() {
 }
 
 func ExampleClient_ListLogEntries() {
-	// import loggingpb "google.golang.org/genproto/googleapis/logging/v2"
-	// import "google.golang.org/api/iterator"
-
 	ctx := context.Background()
 	c, err := logging.NewClient(ctx)
 	if err != nil {
 		// TODO: Handle error.
 	}
+	defer c.Close()
 
 	req := &loggingpb.ListLogEntriesRequest{
 		// TODO: Fill request struct fields.
@@ -98,14 +99,12 @@ func ExampleClient_ListLogEntries() {
 }
 
 func ExampleClient_ListMonitoredResourceDescriptors() {
-	// import loggingpb "google.golang.org/genproto/googleapis/logging/v2"
-	// import "google.golang.org/api/iterator"
-
 	ctx := context.Background()
 	c, err := logging.NewClient(ctx)
 	if err != nil {
 		// TODO: Handle error.
 	}
+	defer c.Close()
 
 	req := &loggingpb.ListMonitoredResourceDescriptorsRequest{
 		// TODO: Fill request struct fields.
@@ -125,14 +124,12 @@ func ExampleClient_ListMonitoredResourceDescriptors() {
 }
 
 func ExampleClient_ListLogs() {
-	// import loggingpb "google.golang.org/genproto/googleapis/logging/v2"
-	// import "google.golang.org/api/iterator"
-
 	ctx := context.Background()
 	c, err := logging.NewClient(ctx)
 	if err != nil {
 		// TODO: Handle error.
 	}
+	defer c.Close()
 
 	req := &loggingpb.ListLogsRequest{
 		// TODO: Fill request struct fields.
@@ -145,6 +142,41 @@ func ExampleClient_ListLogs() {
 		}
 		if err != nil {
 			// TODO: Handle error.
+		}
+		// TODO: Use resp.
+		_ = resp
+	}
+}
+
+func ExampleClient_TailLogEntries() {
+	ctx := context.Background()
+	c, err := logging.NewClient(ctx)
+	if err != nil {
+		// TODO: Handle error.
+	}
+	defer c.Close()
+	stream, err := c.TailLogEntries(ctx)
+	if err != nil {
+		// TODO: Handle error.
+	}
+	go func() {
+		reqs := []*loggingpb.TailLogEntriesRequest{
+			// TODO: Create requests.
+		}
+		for _, req := range reqs {
+			if err := stream.Send(req); err != nil {
+				// TODO: Handle error.
+			}
+		}
+		stream.CloseSend()
+	}()
+	for {
+		resp, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			// TODO: handle error.
 		}
 		// TODO: Use resp.
 		_ = resp

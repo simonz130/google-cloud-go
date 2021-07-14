@@ -102,7 +102,7 @@ func TestLoad(t *testing.T) {
 				CreateDisposition:           CreateNever,
 				WriteDisposition:            WriteTruncate,
 				Labels:                      map[string]string{"a": "b"},
-				TimePartitioning:            &TimePartitioning{Type: DayPartitioningType, Expiration: 1234 * time.Millisecond},
+				TimePartitioning:            &TimePartitioning{Type: MonthPartitioningType, Expiration: 1234 * time.Millisecond},
 				Clustering:                  &Clustering{Fields: []string{"cfield1"}},
 				DestinationEncryptionConfig: &EncryptionConfig{KMSKeyName: "keyName"},
 				SchemaUpdateOptions:         []string{"ALLOW_FIELD_ADDITION"},
@@ -114,7 +114,7 @@ func TestLoad(t *testing.T) {
 				j.Configuration.Load.CreateDisposition = "CREATE_NEVER"
 				j.Configuration.Load.WriteDisposition = "WRITE_TRUNCATE"
 				j.Configuration.Load.TimePartitioning = &bq.TimePartitioning{
-					Type:         "DAY",
+					Type:         "MONTH",
 					ExpirationMs: 1234,
 				}
 				j.Configuration.Load.Clustering = &bq.Clustering{
@@ -339,6 +339,31 @@ func TestLoad(t *testing.T) {
 				j := defaultLoadJob()
 				j.Configuration.Load.SourceFormat = "DATASTORE_BACKUP"
 				j.Configuration.Load.ProjectionFields = []string{"foo", "bar", "baz"}
+				return j
+			}(),
+		},
+		{
+			dst: c.Dataset("dataset-id").Table("table-id"),
+			src: func() *GCSReference {
+				g := NewGCSReference("uri")
+				g.SourceFormat = Parquet
+				return g
+			}(),
+			config: LoadConfig{
+				HivePartitioningOptions: &HivePartitioningOptions{
+					Mode:                   CustomHivePartitioningMode,
+					SourceURIPrefix:        "source_uri",
+					RequirePartitionFilter: true,
+				},
+			},
+			want: func() *bq.Job {
+				j := defaultLoadJob()
+				j.Configuration.Load.SourceFormat = "PARQUET"
+				j.Configuration.Load.HivePartitioningOptions = &bq.HivePartitioningOptions{
+					Mode:                   "CUSTOM",
+					RequirePartitionFilter: true,
+					SourceUriPrefix:        "source_uri",
+				}
 				return j
 			}(),
 		},

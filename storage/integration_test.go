@@ -52,6 +52,7 @@ import (
 	"google.golang.org/api/iterator"
 	itesting "google.golang.org/api/iterator/testing"
 	"google.golang.org/api/option"
+	iampb "google.golang.org/genproto/googleapis/iam/v1"
 )
 
 const (
@@ -351,7 +352,7 @@ func TestIntegration_BucketUpdate(t *testing.T) {
 		t.Fatalf("got %v, want %v", attrs.Labels, wantLabels)
 	}
 
-	// Turn  off versioning again; add and remove some more labels.
+	// Turn off versioning again; add and remove some more labels.
 	ua = BucketAttrsToUpdate{VersioningEnabled: false}
 	ua.SetLabel("l1", "v2")   // update
 	ua.SetLabel("new", "new") // create
@@ -382,6 +383,18 @@ func TestIntegration_BucketUpdate(t *testing.T) {
 	attrs = h.mustUpdateBucket(b, ua)
 	if !testutil.Equal(attrs.Lifecycle, wantLifecycle) {
 		t.Fatalf("got %v, want %v", attrs.Lifecycle, wantLifecycle)
+	}
+	// Check that StorageClass has "STANDARD" value for unset field by default
+	// before passing new value.
+	wantStorageClass := "STANDARD"
+	if !testutil.Equal(attrs.StorageClass, wantStorageClass) {
+		t.Fatalf("got %v, want %v", attrs.StorageClass, wantStorageClass)
+	}
+	wantStorageClass = "NEARLINE"
+	ua = BucketAttrsToUpdate{StorageClass: wantStorageClass}
+	attrs = h.mustUpdateBucket(b, ua)
+	if !testutil.Equal(attrs.StorageClass, wantStorageClass) {
+		t.Fatalf("got %v, want %v", attrs.StorageClass, wantStorageClass)
 	}
 }
 
@@ -563,6 +576,92 @@ func TestIntegration_UniformBucketLevelAccess(t *testing.T) {
 	}
 }
 
+func TestIntegration_PublicAccessPrevention(t *testing.T) {
+	ctx := context.Background()
+	client := testConfig(ctx, t)
+	defer client.Close()
+	h := testHelper{t}
+
+	// Create a bucket with PublicAccessPrevention enforced.
+	bkt := client.Bucket(uidSpace.New())
+	h.mustCreate(bkt, testutil.ProjID(), &BucketAttrs{PublicAccessPrevention: PublicAccessPreventionEnforced})
+	defer h.mustDeleteBucket(bkt)
+
+	// Making bucket public should fail.
+	policy, err := bkt.IAM().V3().Policy(ctx)
+	if err != nil {
+		t.Fatalf("fetching bucket IAM policy: %v", err)
+	}
+	policy.Bindings = append(policy.Bindings, &iampb.Binding{
+		Role:    "roles/storage.objectViewer",
+		Members: []string{iam.AllUsers},
+	})
+	if err := bkt.IAM().V3().SetPolicy(ctx, policy); err == nil {
+		t.Error("SetPolicy: expected adding AllUsers policy to bucket should fail")
+	}
+
+	// Making object public via ACL should fail.
+	o := bkt.Object("publicAccessPrevention")
+	defer func() {
+		if err := o.Delete(ctx); err != nil {
+			log.Printf("failed to delete test object: %v", err)
+		}
+	}()
+	wc := o.NewWriter(ctx)
+	wc.ContentType = "text/plain"
+	h.mustWrite(wc, []byte("test"))
+	a := o.ACL()
+	if err := a.Set(ctx, AllUsers, RoleReader); err == nil {
+		t.Error("ACL.Set: expected adding AllUsers ACL to object should fail")
+	}
+
+	// Update PAP setting to unspecified should work and not affect UBLA setting.
+	attrs, err := bkt.Update(ctx, BucketAttrsToUpdate{PublicAccessPrevention: PublicAccessPreventionUnspecified})
+	if err != nil {
+		t.Fatalf("updating PublicAccessPrevention failed: %v", err)
+	}
+	if attrs.PublicAccessPrevention != PublicAccessPreventionUnspecified {
+		t.Errorf("updating PublicAccessPrevention: got %s, want %s", attrs.PublicAccessPrevention, PublicAccessPreventionUnspecified)
+	}
+	if attrs.UniformBucketLevelAccess.Enabled || attrs.BucketPolicyOnly.Enabled {
+		t.Error("updating PublicAccessPrevention changed UBLA setting")
+	}
+
+	// Now, making object public or making bucket public should succeed. Run with
+	// retry because ACL settings may take time to propagate.
+	if err := retry(ctx,
+		func() error {
+			a = o.ACL()
+			return a.Set(ctx, AllUsers, RoleReader)
+		},
+		nil); err != nil {
+		t.Errorf("ACL.Set: making object public failed: %v", err)
+	}
+	policy, err = bkt.IAM().V3().Policy(ctx)
+	if err != nil {
+		t.Fatalf("fetching bucket IAM policy: %v", err)
+	}
+	policy.Bindings = append(policy.Bindings, &iampb.Binding{
+		Role:    "roles/storage.objectViewer",
+		Members: []string{iam.AllUsers},
+	})
+	if err := bkt.IAM().V3().SetPolicy(ctx, policy); err != nil {
+		t.Errorf("SetPolicy: making bucket public failed: %v", err)
+	}
+
+	// Updating UBLA should not affect PAP setting.
+	attrs, err = bkt.Update(ctx, BucketAttrsToUpdate{UniformBucketLevelAccess: &UniformBucketLevelAccess{Enabled: true}})
+	if err != nil {
+		t.Fatalf("updating UBLA failed: %v", err)
+	}
+	if !attrs.UniformBucketLevelAccess.Enabled {
+		t.Error("updating UBLA: got UBLA not enabled, want enabled")
+	}
+	if attrs.PublicAccessPrevention != PublicAccessPreventionUnspecified {
+		t.Errorf("updating UBLA: got %s, want %s", attrs.PublicAccessPrevention, PublicAccessPreventionUnspecified)
+	}
+}
+
 func TestIntegration_ConditionalDelete(t *testing.T) {
 	ctx := context.Background()
 	client := testConfig(ctx, t)
@@ -686,6 +785,44 @@ func TestIntegration_Objects(t *testing.T) {
 	testObjectsIterateSelectedAttrs(t, bkt, objects)
 	testObjectsIterateAllSelectedAttrs(t, bkt, objects)
 	testObjectIteratorWithOffset(t, bkt, objects)
+	testObjectsIterateWithProjection(t, bkt)
+	t.Run("testObjectsIterateSelectedAttrsDelimiter", func(t *testing.T) {
+		query := &Query{Prefix: "", Delimiter: "/"}
+		if err := query.SetAttrSelection([]string{"Name"}); err != nil {
+			t.Fatalf("selecting query attrs: %v", err)
+		}
+
+		var gotNames []string
+		var gotPrefixes []string
+		it := bkt.Objects(context.Background(), query)
+		for {
+			attrs, err := it.Next()
+			if err == iterator.Done {
+				break
+			}
+			if err != nil {
+				t.Fatalf("iterator.Next: %v", err)
+			}
+			if attrs.Name != "" {
+				gotNames = append(gotNames, attrs.Name)
+			} else if attrs.Prefix != "" {
+				gotPrefixes = append(gotPrefixes, attrs.Prefix)
+			}
+
+			if attrs.Bucket != "" {
+				t.Errorf("Bucket field not selected, want empty, got = %v", attrs.Bucket)
+			}
+		}
+
+		sortedNames := []string{"obj1", "obj2"}
+		if !cmp.Equal(sortedNames, gotNames) {
+			t.Errorf("names = %v, want %v", gotNames, sortedNames)
+		}
+		sortedPrefixes := []string{"obj/"}
+		if !cmp.Equal(sortedPrefixes, gotPrefixes) {
+			t.Errorf("prefixes = %v, want %v", gotPrefixes, sortedPrefixes)
+		}
+	})
 
 	// Test Reader.
 	for _, obj := range objects {
@@ -1136,7 +1273,7 @@ func testObjectsIterateSelectedAttrs(t *testing.T, bkt *BucketHandle, objects []
 			break
 		}
 		if err != nil {
-			log.Fatal(err)
+			t.Fatalf("iterator.Next: %v", err)
 		}
 		gotNames = append(gotNames, attrs.Name)
 
@@ -1177,13 +1314,49 @@ func testObjectsIterateAllSelectedAttrs(t *testing.T, bkt *BucketHandle, objects
 			break
 		}
 		if err != nil {
-			log.Fatal(err)
+			t.Fatalf("iterator.Next: %v", err)
 		}
 		count++
 	}
 
 	if count != len(objects)-1 {
 		t.Errorf("count = %v, want %v", count, len(objects)-1)
+	}
+}
+
+func testObjectsIterateWithProjection(t *testing.T, bkt *BucketHandle) {
+	projections := map[Projection]bool{
+		ProjectionDefault: true,
+		ProjectionFull:    true,
+		ProjectionNoACL:   false,
+	}
+
+	for projection, expectACL := range projections {
+		query := &Query{Projection: projection}
+		it := bkt.Objects(context.Background(), query)
+		attrs, err := it.Next()
+		if err == iterator.Done {
+			t.Fatalf("iterator: no objects")
+		}
+		if err != nil {
+			t.Fatalf("iterator.Next: %v", err)
+		}
+
+		if expectACL {
+			if attrs.Owner == "" {
+				t.Errorf("projection %q: Owner is empty, want nonempty Owner", projection)
+			}
+			if len(attrs.ACL) == 0 {
+				t.Errorf("projection %q: ACL is empty, want at least one ACL rule", projection)
+			}
+		} else {
+			if attrs.Owner != "" {
+				t.Errorf("projection %q: got Owner = %q, want empty Owner", projection, attrs.Owner)
+			}
+			if len(attrs.ACL) != 0 {
+				t.Errorf("projection %q: got %d ACL rules, want empty ACL", projection, len(attrs.ACL))
+			}
+		}
 	}
 }
 
@@ -1838,7 +2011,7 @@ func TestIntegration_NoUnicodeNormalization(t *testing.T) {
 	ctx := context.Background()
 	client := testConfig(ctx, t)
 	defer client.Close()
-	bkt := client.Bucket("storage-library-test-bucket")
+	bkt := client.Bucket(bucketName)
 	h := testHelper{t}
 
 	for _, tst := range []struct {
@@ -1848,6 +2021,8 @@ func TestIntegration_NoUnicodeNormalization(t *testing.T) {
 		{`"Cafe\u0301"`, "Normalization Form D"},
 	} {
 		name, err := strconv.Unquote(tst.nameQuoted)
+		w := bkt.Object(name).NewWriter(ctx)
+		h.mustWrite(w, []byte(tst.content))
 		if err != nil {
 			t.Fatalf("invalid name: %s: %v", tst.nameQuoted, err)
 		}
@@ -1992,7 +2167,6 @@ func TestIntegration_RequesterPays(t *testing.T) {
 	// - (1b) must NOT have that permission on (3a).
 	// - (1a) must NOT have that permission on (3b).
 
-	t.Skip("https://github.com/googleapis/google-cloud-go/issues/1753")
 	const wantErrorCode = 400
 
 	ctx := context.Background()
@@ -2107,23 +2281,29 @@ func TestIntegration_RequesterPays(t *testing.T) {
 		}
 	}
 	// Object operations.
+	obj1 := "acl-go-test" + uidSpace.New()
 	call("write object", func(b *BucketHandle) error {
-		return writeObject(ctx, b.Object("foo"), "text/plain", []byte("hello"))
+		return writeObject(ctx, b.Object(obj1), "text/plain", []byte("hello"))
 	})
 	call("read object", func(b *BucketHandle) error {
-		_, err := readObject(ctx, b.Object("foo"))
+		_, err := readObject(ctx, b.Object(obj1))
 		return err
 	})
 	call("object attrs", func(b *BucketHandle) error {
-		_, err := b.Object("foo").Attrs(ctx)
+		_, err := b.Object(obj1).Attrs(ctx)
 		return err
 	})
 	call("update object", func(b *BucketHandle) error {
-		_, err := b.Object("foo").Update(ctx, ObjectAttrsToUpdate{ContentLanguage: "en"})
+		_, err := b.Object(obj1).Update(ctx, ObjectAttrsToUpdate{ContentLanguage: "en"})
 		return err
 	})
 
 	// ACL operations.
+	// Create another object for these to avoid object rate limits.
+	obj2 := "acl-go-test" + uidSpace.New()
+	call("write object", func(b *BucketHandle) error {
+		return writeObject(ctx, b.Object(obj2), "text/plain", []byte("hello"))
+	})
 	entity := ACLEntity("domain-google.com")
 	call("bucket acl set", func(b *BucketHandle) error {
 		return b.ACL().Set(ctx, entity, RoleReader)
@@ -2156,14 +2336,14 @@ func TestIntegration_RequesterPays(t *testing.T) {
 		return err
 	})
 	call("object acl set", func(b *BucketHandle) error {
-		return b.Object("foo").ACL().Set(ctx, entity, RoleReader)
+		return b.Object(obj2).ACL().Set(ctx, entity, RoleReader)
 	})
 	call("object acl list", func(b *BucketHandle) error {
-		_, err := b.Object("foo").ACL().List(ctx)
+		_, err := b.Object(obj2).ACL().List(ctx)
 		return err
 	})
 	call("object acl delete", func(b *BucketHandle) error {
-		err := b.Object("foo").ACL().Delete(ctx, entity)
+		err := b.Object(obj2).ACL().Delete(ctx, entity)
 		if errCode(err) == 404 {
 			return nil
 		}
@@ -2172,11 +2352,11 @@ func TestIntegration_RequesterPays(t *testing.T) {
 
 	// Copy and compose.
 	call("copy", func(b *BucketHandle) error {
-		_, err := b.Object("copy").CopierFrom(b.Object("foo")).Run(ctx)
+		_, err := b.Object("copy").CopierFrom(b.Object(obj1)).Run(ctx)
 		return err
 	})
 	call("compose", func(b *BucketHandle) error {
-		_, err := b.Object("compose").ComposerFrom(b.Object("foo"), b.Object("copy")).Run(ctx)
+		_, err := b.Object("compose").ComposerFrom(b.Object(obj1), b.Object("copy")).Run(ctx)
 		return err
 	})
 	call("delete object", func(b *BucketHandle) error {
@@ -2184,10 +2364,11 @@ func TestIntegration_RequesterPays(t *testing.T) {
 		// The storage service may perform validation in any order (perhaps in parallel),
 		// so if we delete an object that doesn't exist and for which we lack permission,
 		// we could see either of those two errors. (See Google-internal bug 78341001.)
-		h.mustWrite(b1.Object("foo").NewWriter(ctx), []byte("hello")) // note: b1, not b.
-		return b.Object("foo").Delete(ctx)
+		h.mustWrite(b1.Object(obj1).NewWriter(ctx), []byte("hello")) // note: b1, not b.
+		return b.Object(obj1).Delete(ctx)
 	})
-	b1.Object("foo").Delete(ctx) // Make sure object is deleted.
+	b1.Object(obj1).Delete(ctx) // Clean up created objects.
+	b1.Object(obj2).Delete(ctx)
 	for _, obj := range []string{"copy", "compose"} {
 		if err := b1.UserProject(projID).Object(obj).Delete(ctx); err != nil {
 			t.Fatalf("could not delete %q: %v", obj, err)
@@ -2243,8 +2424,8 @@ func TestIntegration_PublicBucket(t *testing.T) {
 	}
 
 	const landsatBucket = "gcp-public-data-landsat"
-	const landsatPrefix = "LC08/PRE/044/034/LC80440342016259LGN00/"
-	const landsatObject = landsatPrefix + "LC80440342016259LGN00_MTL.txt"
+	const landsatPrefix = "LC08/01/001/002/LC08_L1GT_001002_20160817_20170322_01_T2/"
+	const landsatObject = landsatPrefix + "LC08_L1GT_001002_20160817_20170322_01_T2_ANG.txt"
 
 	// Create an unauthenticated client.
 	ctx := context.Background()
@@ -2259,7 +2440,7 @@ func TestIntegration_PublicBucket(t *testing.T) {
 
 	// Read a public object.
 	bytes := h.mustRead(obj)
-	if got, want := len(bytes), 7903; got != want {
+	if got, want := len(bytes), 117255; got != want {
 		t.Errorf("len(bytes) = %d, want %d", got, want)
 	}
 
@@ -2276,7 +2457,7 @@ func TestIntegration_PublicBucket(t *testing.T) {
 		}
 		gotCount++
 	}
-	if wantCount := 13; gotCount != wantCount {
+	if wantCount := 14; gotCount != wantCount {
 		t.Errorf("object count: got %d, want %d", gotCount, wantCount)
 	}
 
@@ -2314,17 +2495,32 @@ func TestIntegration_ReadCRC(t *testing.T) {
 		// This is an uncompressed file.
 		// See https://cloud.google.com/storage/docs/public-datasets/landsat
 		uncompressedBucket = "gcp-public-data-landsat"
-		uncompressedObject = "LC08/PRE/044/034/LC80440342016259LGN00/LC80440342016259LGN00_MTL.txt"
+		uncompressedObject = "LC08/01/001/002/LC08_L1GT_001002_20160817_20170322_01_T2/LC08_L1GT_001002_20160817_20170322_01_T2_ANG.txt"
 
-		gzippedBucket = "storage-library-test-bucket"
 		gzippedObject = "gzipped-text.txt"
 	)
 	ctx := context.Background()
-	client, err := newTestClient(ctx, option.WithoutAuthentication())
+	client, err := newTestClient(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
+	h := testHelper{t}
 	defer client.Close()
+
+	// Create gzipped object.
+	var buf bytes.Buffer
+	zw := gzip.NewWriter(&buf)
+	zw.Name = gzippedObject
+	if _, err := zw.Write([]byte("gzipped object data")); err != nil {
+		t.Fatalf("creating gzip: %v", err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("closing gzip writer: %v", err)
+	}
+	w := client.Bucket(bucketName).Object(gzippedObject).NewWriter(ctx)
+	w.ContentEncoding = "gzip"
+	w.ContentType = "text/plain"
+	h.mustWrite(w, buf.Bytes())
 
 	for _, test := range []struct {
 		desc           string
@@ -2372,7 +2568,7 @@ func TestIntegration_ReadCRC(t *testing.T) {
 			// because it was computed against the zipped contents. We can detect
 			// this case using http.Response.Uncompressed.
 			desc:           "compressed, entire file, unzipped",
-			obj:            client.Bucket(gzippedBucket).Object(gzippedObject),
+			obj:            client.Bucket(bucketName).Object(gzippedObject),
 			offset:         0,
 			length:         -1,
 			readCompressed: false,
@@ -2382,7 +2578,7 @@ func TestIntegration_ReadCRC(t *testing.T) {
 			// When we read a gzipped file uncompressed, it's like reading a regular file:
 			// the served content and the CRC match.
 			desc:           "compressed, entire file, read compressed",
-			obj:            client.Bucket(gzippedBucket).Object(gzippedObject),
+			obj:            client.Bucket(bucketName).Object(gzippedObject),
 			offset:         0,
 			length:         -1,
 			readCompressed: true,
@@ -2390,7 +2586,7 @@ func TestIntegration_ReadCRC(t *testing.T) {
 		},
 		{
 			desc:           "compressed, partial, server unzips",
-			obj:            client.Bucket(gzippedBucket).Object(gzippedObject),
+			obj:            client.Bucket(bucketName).Object(gzippedObject),
 			offset:         1,
 			length:         8,
 			readCompressed: false,
@@ -2399,7 +2595,7 @@ func TestIntegration_ReadCRC(t *testing.T) {
 		},
 		{
 			desc:           "compressed, partial, read compressed",
-			obj:            client.Bucket(gzippedBucket).Object(gzippedObject),
+			obj:            client.Bucket(bucketName).Object(gzippedObject),
 			offset:         1,
 			length:         8,
 			readCompressed: true,
@@ -2449,12 +2645,14 @@ func TestIntegration_CancelWrite(t *testing.T) {
 	cancel()
 	// The next Write should return context.Canceled.
 	_, err = w.Write(buf)
-	if err != context.Canceled {
+	// TODO: Once we drop support for Go versions < 1.13, use errors.Is() to
+	// check for context cancellation instead.
+	if err != context.Canceled && !strings.Contains(err.Error(), "context canceled") {
 		t.Fatalf("got %v, wanted context.Canceled", err)
 	}
 	// The Close should too.
 	err = w.Close()
-	if err != context.Canceled {
+	if err != context.Canceled && !strings.Contains(err.Error(), "context canceled") {
 		t.Fatalf("got %v, wanted context.Canceled", err)
 	}
 }
@@ -2691,11 +2889,10 @@ func TestIntegration_CustomTime(t *testing.T) {
 	}
 
 	// Update CustomTime to the past should give error.
-	// TODO(tritone): uncomment once internal bug is fixed.
-	//earlierTime := ct.Add(5*time.Hour)
-	//if _, err := obj.Update(ctx, ObjectAttrsToUpdate{CustomTime:earlierTime}); err == nil {
-	//	t.Fatalf("backdating CustomTime: expected error, got none")
-	//}
+	earlierTime := ct.Add(5 * time.Hour)
+	if _, err := obj.Update(ctx, ObjectAttrsToUpdate{CustomTime: earlierTime}); err == nil {
+		t.Fatalf("backdating CustomTime: expected error, got none")
+	}
 
 	// Zero value for CustomTime should be ignored.
 	if _, err := obj.Update(ctx, ObjectAttrsToUpdate{}); err != nil {
@@ -3068,6 +3265,54 @@ func TestIntegration_ReaderAttrs(t *testing.T) {
 	}
 }
 
+// Test that context cancellation correctly stops a download before completion.
+func TestIntegration_ReaderCancel(t *testing.T) {
+	ctx := context.Background()
+	client := testConfig(ctx, t)
+	defer client.Close()
+
+	bkt := client.Bucket(bucketName)
+
+	// Upload a 1MB object.
+	obj := bkt.Object("reader-cancel-obj")
+	w := obj.NewWriter(ctx)
+	c := randomContents()
+	for i := 0; i < 62500; i++ {
+		if _, err := w.Write(c); err != nil {
+			t.Fatalf("writer.Write: %v", err)
+		}
+
+	}
+	w.Close()
+
+	// Create a reader (which makes a GET request to GCS and opens the body to
+	// read the object) and then cancel the context before reading.
+	readerCtx, cancel := context.WithCancel(ctx)
+	r, err := obj.NewReader(readerCtx)
+	if err != nil {
+		t.Fatalf("obj.NewReader: %v", err)
+	}
+	defer r.Close()
+
+	cancel()
+
+	// Read the object 1KB a time. We cannot guarantee that Reads will return a
+	// context canceled error immediately, but they should always do so before we
+	// reach EOF.
+	var readErr error
+	for i := 0; i < 1000; i++ {
+		buf := make([]byte, 1000)
+		_, readErr = r.Read(buf)
+		if readErr != nil {
+			if readErr == context.Canceled {
+				return
+			}
+			break
+		}
+	}
+	t.Fatalf("Reader.Read: got %v, want context.Canceled", readErr)
+}
+
 // Ensures that a file stored with a:
 // * Content-Encoding of "gzip"
 // * Content-Type of "text/plain"
@@ -3353,7 +3598,7 @@ func TestIntegration_PostPolicyV4(t *testing.T) {
 	}
 	if g, w := res.StatusCode, statusCodeToRespond; g != w {
 		blob, _ := httputil.DumpResponse(res, true)
-		t.Errorf("Status code in response mismatch: got %d want %d\nBody: %s", g, w, blob)
+		t.Fatalf("Status code in response mismatch: got %d want %d\nBody: %s", g, w, blob)
 	}
 	io.Copy(ioutil.Discard, res.Body)
 

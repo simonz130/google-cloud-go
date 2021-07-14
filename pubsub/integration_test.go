@@ -22,6 +22,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -32,7 +33,6 @@ import (
 	"cloud.google.com/go/internal/version"
 	kms "cloud.google.com/go/kms/apiv1"
 	testutil2 "cloud.google.com/go/pubsub/internal/testutil"
-	"github.com/golang/protobuf/proto"
 	gax "github.com/googleapis/gax-go/v2"
 	"golang.org/x/oauth2/google"
 	"google.golang.org/api/iterator"
@@ -43,6 +43,8 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/encoding/protowire"
+	"google.golang.org/protobuf/proto"
 )
 
 var (
@@ -292,7 +294,7 @@ func testPublishAndReceive(t *testing.T, client *Client, maxMsgs int, synchronou
 	})
 	if err != nil {
 		if c := status.Convert(err); c.Code() == codes.Canceled {
-			if time.Now().Sub(now) >= time.Minute {
+			if time.Since(now) >= time.Minute {
 				t.Fatal("pullN took too long")
 			}
 		} else {
@@ -390,8 +392,8 @@ func TestIntegration_LargePublishSize(t *testing.T) {
 	length := MaxPublishRequestBytes - calcFieldSizeString(topic.String())
 	// Next, account for the overhead from encoding an individual PubsubMessage,
 	// and the inner PubsubMessage.Data field.
-	pbMsgOverhead := 1 + proto.SizeVarint(uint64(length))
-	dataOverhead := 1 + proto.SizeVarint(uint64(length-pbMsgOverhead))
+	pbMsgOverhead := 1 + protowire.SizeVarint(uint64(length))
+	dataOverhead := 1 + protowire.SizeVarint(uint64(length-pbMsgOverhead))
 	maxLengthSingleMessage := length - pbMsgOverhead - dataOverhead
 
 	publishReq := &pb.PublishRequest{
@@ -682,6 +684,16 @@ func TestIntegration_UpdateSubscription(t *testing.T) {
 	}
 }
 
+// publishSync is a utility function for publishing a message and
+// blocking until the message has been confirmed.
+func publishSync(ctx context.Context, t *testing.T, topic *Topic, msg *Message) {
+	res := topic.Publish(ctx, msg)
+	_, err := res.Get(ctx)
+	if err != nil {
+		t.Fatalf("publishSync err: %v", err)
+	}
+}
+
 func TestIntegration_UpdateSubscription_ExpirationPolicy(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -768,15 +780,7 @@ func TestIntegration_UpdateTopicLabels(t *testing.T) {
 	defer client.Close()
 
 	compareConfig := func(got TopicConfig, wantLabels map[string]string) bool {
-		if !testutil.Equal(got.Labels, wantLabels) {
-			return false
-		}
-		// For MessageStoragePolicy, we don't want to check for an exact set of regions.
-		// That set may change at any time. Instead, just make sure that the set isn't empty.
-		if len(got.MessageStoragePolicy.AllowedPersistenceRegions) == 0 {
-			return false
-		}
-		return true
+		return testutil.Equal(got.Labels, wantLabels)
 	}
 
 	topic, err := client.CreateTopic(ctx, topicIDs.New())
@@ -902,18 +906,9 @@ func TestIntegration_MessageStoragePolicy_TopicLevel(t *testing.T) {
 	defer topic.Delete(ctx)
 	defer topic.Stop()
 
-	// Initially the message storage policy should just be non-empty
-	got, err := topic.Config(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(got.MessageStoragePolicy.AllowedPersistenceRegions) == 0 {
-		t.Fatalf("Empty AllowedPersistenceRegions in :\n%+v", got)
-	}
-
 	// Specify some regions to set.
 	regions := []string{"asia-east1", "us-east1"}
-	got, err = topic.Update(ctx, TopicConfigToUpdate{
+	got, err := topic.Update(ctx, TopicConfigToUpdate{
 		MessageStoragePolicy: &MessageStoragePolicy{
 			AllowedPersistenceRegions: regions,
 		},
@@ -928,17 +923,6 @@ func TestIntegration_MessageStoragePolicy_TopicLevel(t *testing.T) {
 	}
 	if !testutil.Equal(got, want) {
 		t.Fatalf("\ngot  %+v\nwant regions%+v", got, want)
-	}
-
-	// Reset all allowed regions to project default.
-	got, err = topic.Update(ctx, TopicConfigToUpdate{
-		MessageStoragePolicy: &MessageStoragePolicy{},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(got.MessageStoragePolicy.AllowedPersistenceRegions) == 0 {
-		t.Fatalf("Unexpectedly got empty MessageStoragePolicy.AllowedPersistenceRegions in:\n%+v", got)
 	}
 
 	// Removing all regions should fail
@@ -1104,7 +1088,7 @@ func TestIntegration_CreateTopic_MessageStoragePolicy(t *testing.T) {
 
 func TestIntegration_OrderedKeys_Basic(t *testing.T) {
 	ctx := context.Background()
-	client := integrationTestClient(ctx, t)
+	client := integrationTestClient(ctx, t, option.WithEndpoint("us-west1-pubsub.googleapis.com:443"))
 	defer client.Close()
 
 	topic, err := client.CreateTopic(ctx, topicIDs.New())
@@ -1147,9 +1131,8 @@ func TestIntegration_OrderedKeys_Basic(t *testing.T) {
 			OrderingKey: orderingKey,
 		})
 		go func() {
-			<-r.ready
-			if r.err != nil {
-				t.Error(r.err)
+			if _, err := r.Get(ctx); err != nil {
+				t.Error(err)
 			}
 		}()
 	}
@@ -1183,9 +1166,8 @@ func TestIntegration_OrderedKeys_Basic(t *testing.T) {
 }
 
 func TestIntegration_OrderedKeys_JSON(t *testing.T) {
-	t.Skip("Flaky, see https://github.com/googleapis/google-cloud-go/issues/1872")
 	ctx := context.Background()
-	client := integrationTestClient(ctx, t)
+	client := integrationTestClient(ctx, t, option.WithEndpoint("us-west1-pubsub.googleapis.com:443"))
 	defer client.Close()
 
 	topic, err := client.CreateTopic(ctx, topicIDs.New())
@@ -1278,8 +1260,8 @@ func TestIntegration_OrderedKeys_JSON(t *testing.T) {
 
 	select {
 	case <-done:
-	case <-time.After(30 * time.Second):
-		t.Fatal("timed out after 30s waiting for all messages to be received")
+	case <-time.After(60 * time.Second):
+		t.Fatal("timed out after 60s waiting for all messages to be received")
 	}
 
 	mu.Lock()
@@ -1291,9 +1273,8 @@ func TestIntegration_OrderedKeys_JSON(t *testing.T) {
 }
 
 func TestIntegration_OrderedKeys_ResumePublish(t *testing.T) {
-	t.Skip("kokoro failing in https://github.com/googleapis/google-cloud-go/issues/1850")
 	ctx := context.Background()
-	client := integrationTestClient(ctx, t)
+	client := integrationTestClient(ctx, t, option.WithEndpoint("us-west1-pubsub.googleapis.com:443"))
 	defer client.Close()
 
 	topic, err := client.CreateTopic(ctx, topicIDs.New())
@@ -1310,43 +1291,107 @@ func TestIntegration_OrderedKeys_ResumePublish(t *testing.T) {
 		t.Fatalf("topic %v should exist, but it doesn't", topic)
 	}
 
-	topic.PublishSettings.DelayThreshold = time.Second
+	topic.PublishSettings.BufferedByteLimit = 100
 	topic.EnableMessageOrdering = true
 
 	orderingKey := "some-ordering-key2"
 	// Publish a message that is too large so we'll get an error that
 	// pauses publishing for this ordering key.
 	r := topic.Publish(ctx, &Message{
-		ID:          "1",
-		Data:        bytes.Repeat([]byte("A"), 1e10),
+		Data:        bytes.Repeat([]byte("A"), 1000),
 		OrderingKey: orderingKey,
 	})
-	<-r.ready
-	if r.err == nil {
+	if _, err := r.Get(ctx); err == nil {
 		t.Fatalf("expected bundle byte limit error, got nil")
 	}
 	// Publish a normal sized message now, which should fail
 	// since publishing on this ordering key is paused.
 	r = topic.Publish(ctx, &Message{
-		ID:          "2",
-		Data:        []byte("failed message"),
+		Data:        []byte("should fail"),
 		OrderingKey: orderingKey,
 	})
-	<-r.ready
-	if r.err == nil || !strings.Contains(r.err.Error(), "pubsub: Publishing for ordering key") {
-		t.Fatalf("expected ordering keys publish error, got %v", r.err)
+	if _, err := r.Get(ctx); err == nil || !strings.Contains(err.Error(), "pubsub: Publishing for ordering key") {
+		t.Fatalf("expected ordering keys publish error, got %v", err)
 	}
 
 	// Lastly, call ResumePublish and make sure subsequent publishes succeed.
 	topic.ResumePublish(orderingKey)
 	r = topic.Publish(ctx, &Message{
-		ID:          "4",
-		Data:        []byte("normal message"),
+		Data:        []byte("should succeed"),
 		OrderingKey: orderingKey,
 	})
-	<-r.ready
-	if r.err != nil {
-		t.Fatalf("got error while publishing message: %v", r.err)
+	if _, err := r.Get(ctx); err != nil {
+		t.Fatalf("got error while publishing message: %v", err)
+	}
+}
+
+// TestIntegration_OrderedKeys_SubscriptionOrdering tests that messages
+// with ordering keys are not processed as such if the subscription
+// does not have message ordering enabled.
+func TestIntegration_OrderedKeys_SubscriptionOrdering(t *testing.T) {
+	ctx := context.Background()
+	client := integrationTestClient(ctx, t, option.WithEndpoint("us-west1-pubsub.googleapis.com:443"))
+	defer client.Close()
+
+	topic, err := client.CreateTopic(ctx, topicIDs.New())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer topic.Delete(ctx)
+	defer topic.Stop()
+	exists, err := topic.Exists(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !exists {
+		t.Fatalf("topic %v should exist, but it doesn't", topic)
+	}
+	topic.EnableMessageOrdering = true
+
+	// Explicitly disable message ordering on the subscription.
+	enableMessageOrdering := false
+	subCfg := SubscriptionConfig{
+		Topic:                 topic,
+		EnableMessageOrdering: enableMessageOrdering,
+	}
+	sub, err := client.CreateSubscription(ctx, subIDs.New(), subCfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sub.Delete(ctx)
+
+	publishSync(ctx, t, topic, &Message{
+		Data:        []byte("message-1"),
+		OrderingKey: "ordering-key-1",
+	})
+
+	publishSync(ctx, t, topic, &Message{
+		Data:        []byte("message-2"),
+		OrderingKey: "ordering-key-1",
+	})
+
+	sub.ReceiveSettings.Synchronous = true
+	ctx2, cancel := context.WithTimeout(ctx, 12*time.Second)
+	defer cancel()
+
+	var numAcked int32
+	sub.Receive(ctx2, func(_ context.Context, msg *Message) {
+		// Create artificial constraints on message processing time.
+		if string(msg.Data) == "message-1" {
+			time.Sleep(10 * time.Second)
+		} else {
+			time.Sleep(5 * time.Second)
+		}
+		msg.Ack()
+		atomic.AddInt32(&numAcked, 1)
+	})
+	if sub.enableOrdering != enableMessageOrdering {
+		t.Fatalf("enableOrdering mismatch: got: %v, want: %v", sub.enableOrdering, enableMessageOrdering)
+	}
+	// If the messages were received on a subscription with the EnableMessageOrdering=true,
+	// total processing would exceed the timeout and only one message would be processed.
+	if numAcked < 2 {
+		t.Fatalf("did not process all messages in time, numAcked: %d", numAcked)
 	}
 }
 
@@ -1558,10 +1603,7 @@ func TestIntegration_BadEndpoint(t *testing.T) {
 func TestIntegration_Filter_CreateSubscription(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	// TODO(hongalex): Remove this once filtering is GA.
-	// https://github.com/googleapis/google-cloud-go/issues/2390
-	opts := withGRPCHeadersAssertion(t, option.WithEndpoint("staging-pubsub.sandbox.googleapis.com:443"))
-	client := integrationTestClient(ctx, t, opts...)
+	client := integrationTestClient(ctx, t)
 	defer client.Close()
 	topic, err := client.CreateTopic(ctx, topicIDs.New())
 	if err != nil {
@@ -1692,10 +1734,7 @@ func TestIntegration_RetryPolicy(t *testing.T) {
 func TestIntegration_DetachSubscription(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	// TODO(hongalex): Remove this once subscription detachment is GA.
-	// https://github.com/googleapis/google-cloud-go/issues/2470
-	opts := withGRPCHeadersAssertion(t, option.WithEndpoint("staging-pubsub.sandbox.googleapis.com:443"))
-	client := integrationTestClient(ctx, t, opts...)
+	client := integrationTestClient(ctx, t)
 	defer client.Close()
 
 	topic, err := client.CreateTopic(ctx, topicIDs.New())

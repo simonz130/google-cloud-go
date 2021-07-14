@@ -90,18 +90,23 @@ type ExternalDataConfig struct {
 	// when reading data.
 	MaxBadRecords int64
 
-	// Additional options for CSV, GoogleSheets and Bigtable formats.
+	// Additional options for CSV, GoogleSheets, Bigtable, and Parquet formats.
 	Options ExternalDataConfigOptions
+
+	// HivePartitioningOptions allows use of Hive partitioning based on the
+	// layout of objects in Google Cloud Storage.
+	HivePartitioningOptions *HivePartitioningOptions
 }
 
 func (e *ExternalDataConfig) toBQ() bq.ExternalDataConfiguration {
 	q := bq.ExternalDataConfiguration{
-		SourceFormat:        string(e.SourceFormat),
-		SourceUris:          e.SourceURIs,
-		Autodetect:          e.AutoDetect,
-		Compression:         string(e.Compression),
-		IgnoreUnknownValues: e.IgnoreUnknownValues,
-		MaxBadRecords:       e.MaxBadRecords,
+		SourceFormat:            string(e.SourceFormat),
+		SourceUris:              e.SourceURIs,
+		Autodetect:              e.AutoDetect,
+		Compression:             string(e.Compression),
+		IgnoreUnknownValues:     e.IgnoreUnknownValues,
+		MaxBadRecords:           e.MaxBadRecords,
+		HivePartitioningOptions: e.HivePartitioningOptions.toBQ(),
 	}
 	if e.Schema != nil {
 		q.Schema = e.Schema.toBQ()
@@ -114,13 +119,14 @@ func (e *ExternalDataConfig) toBQ() bq.ExternalDataConfiguration {
 
 func bqToExternalDataConfig(q *bq.ExternalDataConfiguration) (*ExternalDataConfig, error) {
 	e := &ExternalDataConfig{
-		SourceFormat:        DataFormat(q.SourceFormat),
-		SourceURIs:          q.SourceUris,
-		AutoDetect:          q.Autodetect,
-		Compression:         Compression(q.Compression),
-		IgnoreUnknownValues: q.IgnoreUnknownValues,
-		MaxBadRecords:       q.MaxBadRecords,
-		Schema:              bqToSchema(q.Schema),
+		SourceFormat:            DataFormat(q.SourceFormat),
+		SourceURIs:              q.SourceUris,
+		AutoDetect:              q.Autodetect,
+		Compression:             Compression(q.Compression),
+		IgnoreUnknownValues:     q.IgnoreUnknownValues,
+		MaxBadRecords:           q.MaxBadRecords,
+		Schema:                  bqToSchema(q.Schema),
+		HivePartitioningOptions: bqToHivePartitioningOptions(q.HivePartitioningOptions),
 	}
 	switch {
 	case q.CsvOptions != nil:
@@ -133,6 +139,8 @@ func bqToExternalDataConfig(q *bq.ExternalDataConfiguration) (*ExternalDataConfi
 		if err != nil {
 			return nil, err
 		}
+	case q.ParquetOptions != nil:
+		e.Options = bqToParquetOptions(q.ParquetOptions)
 	}
 	return e, nil
 }
@@ -408,4 +416,96 @@ func bqToBigtableColumn(q *bq.BigtableColumn) (*BigtableColumn, error) {
 		b.Qualifier = string(bytes)
 	}
 	return b, nil
+}
+
+// ParquetOptions are additional options for Parquet external data sources.
+type ParquetOptions struct {
+	// EnumAsString indicates whether to infer Parquet ENUM logical type as
+	// STRING instead of BYTES by default.
+	EnumAsString bool
+
+	// EnableListInference indicates whether to use schema inference
+	// specifically for Parquet LIST logical type.
+	EnableListInference bool
+}
+
+func (o *ParquetOptions) populateExternalDataConfig(c *bq.ExternalDataConfiguration) {
+	if o != nil {
+		c.ParquetOptions = &bq.ParquetOptions{
+			EnumAsString:        o.EnumAsString,
+			EnableListInference: o.EnableListInference,
+		}
+	}
+}
+
+func bqToParquetOptions(q *bq.ParquetOptions) *ParquetOptions {
+	if q == nil {
+		return nil
+	}
+	return &ParquetOptions{
+		EnumAsString:        q.EnumAsString,
+		EnableListInference: q.EnableListInference,
+	}
+}
+
+// HivePartitioningMode is used in conjunction with HivePartitioningOptions.
+type HivePartitioningMode string
+
+const (
+	// AutoHivePartitioningMode automatically infers partitioning key and types.
+	AutoHivePartitioningMode HivePartitioningMode = "AUTO"
+	// StringHivePartitioningMode automatically infers partitioning keys and treats values as string.
+	StringHivePartitioningMode HivePartitioningMode = "STRINGS"
+	// CustomHivePartitioningMode allows custom definition of the external partitioning.
+	CustomHivePartitioningMode HivePartitioningMode = "CUSTOM"
+)
+
+// HivePartitioningOptions defines the behavior of Hive partitioning
+// when working with external data.
+type HivePartitioningOptions struct {
+
+	// Mode defines which hive partitioning mode to use when reading data.
+	Mode HivePartitioningMode
+
+	// When hive partition detection is requested, a common prefix for
+	// all source uris should be supplied.  The prefix must end immediately
+	// before the partition key encoding begins.
+	//
+	// For example, consider files following this data layout.
+	//   gs://bucket/path_to_table/dt=2019-01-01/country=BR/id=7/file.avro
+	//   gs://bucket/path_to_table/dt=2018-12-31/country=CA/id=3/file.avro
+	//
+	// When hive partitioning is requested with either AUTO or STRINGS
+	// detection, the common prefix can be either of
+	// gs://bucket/path_to_table or gs://bucket/path_to_table/ (trailing
+	// slash does not matter).
+	SourceURIPrefix string
+
+	// If set to true, queries against this external table require
+	// a partition filter to be present that can perform partition
+	// elimination.  Hive-partitioned load jobs with this field
+	// set to true will fail.
+	RequirePartitionFilter bool
+}
+
+func (o *HivePartitioningOptions) toBQ() *bq.HivePartitioningOptions {
+	if o == nil {
+		return nil
+	}
+	return &bq.HivePartitioningOptions{
+		Mode:                   string(o.Mode),
+		SourceUriPrefix:        o.SourceURIPrefix,
+		RequirePartitionFilter: o.RequirePartitionFilter,
+	}
+}
+
+func bqToHivePartitioningOptions(q *bq.HivePartitioningOptions) *HivePartitioningOptions {
+	if q == nil {
+		return nil
+	}
+	return &HivePartitioningOptions{
+		Mode:                   HivePartitioningMode(q.Mode),
+		SourceURIPrefix:        q.SourceUriPrefix,
+		RequirePartitionFilter: q.RequirePartitionFilter,
+	}
 }
